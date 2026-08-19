@@ -1,5 +1,5 @@
 from pathlib import Path
-import shutil, subprocess, sys, re, hashlib, time
+import shutil, subprocess, sys, hashlib, time, yaml
 
 AUTO = Path("/config/automations.yaml")
 TEST = Path("/config/tests/test_heater_regression.py")
@@ -23,13 +23,24 @@ def get_block(text, marker):
 
 def replace_block(text, marker, block):
     a, z = block_bounds(text, marker)
-    return text[:a] + block + text[z:]
+    return text[:a] + block.rstrip() + text[z:]
+
+def dump_one(obj, automation_id):
+    out = yaml.safe_dump([obj], allow_unicode=True, sort_keys=False, width=180)
+    first = f"- id: {automation_id}\n"
+    quoted = f"- id: '{automation_id}'\n"
+    if out.startswith(first):
+        out = quoted + out[len(first):]
+    assert out.startswith(quoted)
+    return out
 
 try:
     s = AUTO.read_text(encoding="utf-8")
 
-    problem_marker = "- id: 'markvarec_loznice_primotop_problem_notify'"
-    voice_marker = "- id: 'markvarec_lina_primotop_problem_hlas'"
+    problem_id = "markvarec_loznice_primotop_problem_notify"
+    voice_id = "markvarec_lina_primotop_problem_hlas"
+    problem_marker = f"- id: '{problem_id}'"
+    voice_marker = f"- id: '{voice_id}'"
     assert s.count(problem_marker) == 1
     assert s.count(voice_marker) == 1
 
@@ -106,60 +117,62 @@ try:
     else:
         assert tuya_id in s and supervision_id in s, "partial heater/Tuya insertion"
 
-    p = get_block(s, problem_marker)
-    # Remove the obsolete umbrella set if still present.
-    p = p.replace("{% set bad = ['off','unknown','unavailable'] %} ", "")
+    # Change only the target problem automation structurally.
+    p_raw = get_block(s, problem_marker)
+    p_list = yaml.safe_load(p_raw)
+    assert isinstance(p_list, list) and len(p_list) == 1
+    p_obj = p_list[0]
+    assert str(p_obj.get("id")) == problem_id
 
-    old_expr_re = re.compile(
-        r"\{\{\s*\(ps in bad and pa >= 120\)\s*"
-        r"or \(cs in bad and ca >= 300\)\s*"
-        r"or \(ps == 'on' and cs == 'heat' and power_ok and power < 5\)\s*\}\}"
-    )
-    new_expr = """{{ (ps == 'off' and pa >= 120)
+    templates = [
+        c for c in p_obj.get("conditions", [])
+        if isinstance(c, dict)
+        and c.get("condition") == "template"
+        and "primotop_v_loznici_vykon" in str(c.get("value_template", ""))
+    ]
+    assert len(templates) == 1
+    templates[0]["value_template"] = """{% set p = states.switch.primotop_v_loznici_zasuvka_1 %}
+{% set c = states.climate.primotop_loznice %}
+{% set ps = states('switch.primotop_v_loznici_zasuvka_1') %}
+{% set cs = states('climate.primotop_loznice') %}
+{% set power_raw = states('sensor.primotop_v_loznici_vykon') %}
+{% set power_ok = power_raw not in ['unknown','unavailable','none',''] %}
+{% set power = power_raw | float(0) %}
+{% set pa = 999999 if p is none else (as_timestamp(now()) - as_timestamp(p.last_changed)) %}
+{% set ca = 999999 if c is none else (as_timestamp(now()) - as_timestamp(c.last_changed)) %}
+{{ (ps == 'off' and pa >= 120)
    or (cs == 'off' and ca >= 300)
    or (ps == 'on' and cs == 'heat' and power_ok and power < 5) }}"""
-    if old_expr_re.search(p):
-        p = old_expr_re.sub(new_expr, p, count=1)
-    else:
-        assert new_expr in p, "problem expression neither old nor new"
 
-    # State duration must use last_changed, not attribute-refresh age.
-    p = p.replace(
-        "(as_timestamp(now()) - as_timestamp(c.last_updated))",
-        "(as_timestamp(now()) - as_timestamp(c.last_changed))",
+    notify_actions = [
+        a for a in p_obj.get("actions", [])
+        if isinstance(a, dict) and a.get("action") == "notify.send_message"
+    ]
+    assert len(notify_actions) == 1
+    notify_actions[0].setdefault("data", {})["message"] = (
+        "Řízení přímotopu v ložnici hlásí problém. "
+        "Zásuvka: {{ states('switch.primotop_v_loznici_zasuvka_1') }}, "
+        "QH4100: {{ states('climate.primotop_loznice') }}. "
+        "Může jít o napájení, stav zařízení nebo zastaralý Tuya stav; recovery běží."
     )
+    s = replace_block(s, problem_marker, dump_one(p_obj, problem_id))
 
-    old_push = (
-        "Přímotop v ložnici má problém. Zásuvka: "
-        "{{ states('switch.primotop_v_loznici_zasuvka_1') }}, QH4100: "
-        "{{ states('climate.primotop_loznice') }}. Regulace se ho dál snaží bezpečně obnovit."
-    )
-    new_push = (
-        "Řízení přímotopu v ložnici hlásí problém. Zásuvka: "
-        "{{ states('switch.primotop_v_loznici_zasuvka_1') }}, QH4100: "
-        "{{ states('climate.primotop_loznice') }}. Může jít o napájení, stav zařízení "
-        "nebo zastaralý Tuya stav; recovery běží."
-    )
-    if old_push in p:
-        p = p.replace(old_push, new_push, 1)
-    else:
-        assert new_push in p, "problem push text neither old nor new"
-    s = replace_block(s, problem_marker, p)
-
-    h = get_block(s, voice_marker)
-    old_voice = (
-        "Pozor. Přímotop v ložnici má problém. Lokální recovery se ho dál snaží obnovit "
-        "a podrobnosti máš v telefonu."
-    )
-    new_voice = (
+    # Change only the target voice automation structurally.
+    h_raw = get_block(s, voice_marker)
+    h_list = yaml.safe_load(h_raw)
+    assert isinstance(h_list, list) and len(h_list) == 1
+    h_obj = h_list[0]
+    assert str(h_obj.get("id")) == voice_id
+    voice_actions = [
+        a for a in h_obj.get("actions", [])
+        if isinstance(a, dict) and a.get("action") == "script.lina_mluv"
+    ]
+    assert len(voice_actions) == 1
+    voice_actions[0].setdefault("data", {})["text"] = (
         "Pozor. Řízení přímotopu v ložnici hlásí problém a recovery běží. "
         "Nemusí jít o fyzickou poruchu QH4100; podrobnosti máš v telefonu."
     )
-    if old_voice in h:
-        h = h.replace(old_voice, new_voice, 1)
-    else:
-        assert new_voice in h, "problem voice text neither old nor new"
-    s = replace_block(s, voice_marker, h)
+    s = replace_block(s, voice_marker, dump_one(h_obj, voice_id))
     AUTO.write_text(s, encoding="utf-8")
 
     t = TEST.read_text(encoding="utf-8")
@@ -205,15 +218,14 @@ assert 'label: "Nedostupný"' in CARD
     TEST.write_text(t, encoding="utf-8")
 
     # Structural sanity before HA validation.
-    import yaml
     parsed = yaml.safe_load(AUTO.read_text(encoding="utf-8"))
     ids = [str(x.get("id", "")) for x in parsed if isinstance(x, dict)]
     assert ids.count(tuya_id) == 1
     assert ids.count(supervision_id) == 1
+    assert ids.count(problem_id) == 1
+    assert ids.count(voice_id) == 1
 
-    test = subprocess.run(
-        ["python3", str(TEST)], text=True, capture_output=True
-    )
+    test = subprocess.run(["python3", str(TEST)], text=True, capture_output=True)
     print(test.stdout, end="")
     print(test.stderr, end="", file=sys.stderr)
     if test.returncode != 0:
