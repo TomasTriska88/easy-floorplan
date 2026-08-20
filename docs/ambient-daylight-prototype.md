@@ -2,7 +2,7 @@
 
 Status: **experimental / not wired into the card / do not enable in production yet**.
 
-This prototype adds a room-aware model for diffuse daylight from the sky. It is intentionally separate from Easy Floorplan's existing direct `sunlight` layer.
+This prototype adds a room-aware model and an isolated SVG renderer for diffuse daylight from the sky. It is intentionally separate from Easy Floorplan's existing direct `sunlight` layer.
 
 ## Why this is a separate layer
 
@@ -48,10 +48,12 @@ These values are calibration starting points, **not yet public configuration def
 - strength: `0.28`
 - depth: `0.8` of the Area's longer bounding-box side
 - spread: `1.15`
+- render tint: `#f4f8ff` (neutral/cool sky light, visually distinct from direct sun)
+- SVG edge blur: `10` plan/canvas units, clamped to `0..40`
 
 They should not be promoted into the editor/config API until visual calibration and full regression validation are complete.
 
-## Render contract
+## Model contract
 
 `ambientOpeningSources(...)` derives deterministic exterior sources.
 
@@ -65,15 +67,40 @@ They should not be promoted into the editor/config API until visual calibration 
 - opening-to-room gradient axis,
 - normalized source opacity.
 
-The patch geometry intentionally may extend outside its room. The eventual SVG renderer must clip it with the exact Area polygon. Keeping clipping in the renderer avoids duplicating polygon clipping math in the physical model while tests can still assert both responsibilities separately.
+The patch geometry intentionally may extend outside its room. The SVG renderer clips it with the exact Area polygon. Keeping clipping in the renderer avoids duplicating polygon clipping math in the physical model while tests can still assert both responsibilities separately.
+
+## SVG renderer contract
+
+`ambient-daylight-render.ts` is intentionally standalone and is **not imported by `render.ts` or `floorplan-card.ts` yet**.
+
+`buildAmbientDaylightRenderModel(...)` prepares a pure, testable render model:
+
+- one deterministic Area clip id,
+- the exact Area polygon points,
+- one deterministic blur-filter id,
+- one unique linear-gradient id per opening patch,
+- bounded opacity and blur,
+- rejection of invalid/non-finite geometry.
+
+`renderAmbientDaylight(...)` then paints each patch with a user-space linear gradient and Gaussian-blurred internal edges. The blur happens before the Area clip is applied, so the soft pool can feather inside the room while the physical room boundary stays hard and light cannot leak into a neighbouring Area.
+
+When eventually wired into the card, this group should render above the Area floor fill and below direct sunlight, glows, openings and interactive items. The prototype does not reorder any existing layer today.
+
+## Validation state
+
+- The ambient model has independent deterministic TypeScript/runtime scenario coverage from the prototype work.
+- The standalone SVG renderer has passed an independent strict TypeScript compile (`tsc --strict --noEmit`) against the exact `Area`, `AreaPoint` and `AmbientDaylightPatch` interfaces it consumes.
+- Dedicated Vitest files cover source classification, scalar falloff, renderer-ready patches and the SVG render model.
+- **Full repository validation (`npm ci`, project typecheck, complete Vitest suite and production build) is still required before wiring the prototype into existing card files.**
+- The fork's draft PR currently has no GitHub Actions run, so absence of CI results is not being treated as a pass.
 
 ## Planned integration sequence
 
-1. Keep the model and its tests isolated until the full upstream validation suite passes.
-2. Add a small SVG render helper with Area clip paths and soft gradients.
-3. Add `ambientDaylight?: boolean` to `FloorplanCardConfig`, default off.
+1. Keep all prototype code additive-only until the full upstream validation suite passes.
+2. **Done:** add a small standalone SVG render helper with Area clip paths, soft gradients and blurred internal edges.
+3. After full validation, add `ambientDaylight?: boolean` to `FloorplanCardConfig`, default off.
 4. Make `collectWatchedEntities` watch `sun.sun` whenever ambient daylight is enabled because elevation changes the layer even when direct sunlight is disabled or sun bearing is pinned.
-5. Insert the ambient render pass immediately after Area fills without reordering existing layers.
+5. Insert the ambient render pass immediately above Area fills without otherwise reordering existing layers.
 6. Add editor/helper text and README documentation before considering the feature public.
 7. Only after visual review and explicit approval may it be enabled in Markvarec production.
 
