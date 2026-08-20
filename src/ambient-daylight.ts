@@ -6,10 +6,11 @@ import { OPENING_ON_WALL_EPS } from "./dead-space";
  * Prototype geometry for room-aware diffuse daylight.
  *
  * This module is deliberately pure and not wired into the card yet. It answers
- * two questions the eventual renderer needs without changing today's render:
+ * the questions the eventual renderer needs without changing today's render:
  *
  * 1. Which openings are on the exterior envelope rather than between rooms?
  * 2. How much soft sky light reaches a sample point inside the adjacent room?
+ * 3. What deterministic patch geometry should an SVG renderer paint?
  *
  * Direct sunlight remains a separate concern in render.ts. Ambient daylight
  * never reads sun azimuth/bearing, so a north-facing window can brighten a room
@@ -42,6 +43,23 @@ export interface AmbientOpeningSource {
   inwardY: number;
   /** Opening width along the wall, in canvas units. */
   length: number;
+}
+
+/**
+ * One soft daylight patch ready for a renderer.
+ *
+ * `points` is a broad trapezoid that starts at the opening and fans into the
+ * room. The renderer must additionally clip it to the Area polygon; keeping
+ * the unclipped patch here makes the geometry deterministic and easy to test.
+ * `gradientStart`/`gradientEnd` define the opening-to-room fade axis.
+ */
+export interface AmbientDaylightPatch {
+  openingId: string;
+  areaId: string;
+  points: [AreaPoint, AreaPoint, AreaPoint, AreaPoint];
+  gradientStart: AreaPoint;
+  gradientEnd: AreaPoint;
+  opacity: number;
 }
 
 interface BoundaryMatch {
@@ -194,8 +212,9 @@ export function ambientOpeningSources(
  * Fraction of ambient sky light an opening can transmit, 0-1.
  *
  * `sunlight: false` remains the explicit "this opening is wall to daylight"
- * opt-out for the prototype. Windows are glazed by default, doors opaque by
- * default. An opaque opening can still admit daylight while physically open.
+ * opt-out for this prototype only; a dedicated ambient opt-out can replace it
+ * if the feature becomes public. Windows are glazed by default, doors opaque
+ * by default. An opaque opening can still admit daylight while physically open.
  * `openFraction` and `shutterOpenFraction` are intentionally inputs rather
  * than HA reads so this module stays deterministic and renderer-agnostic.
  */
@@ -211,17 +230,20 @@ export function ambientOpeningTransmission(
 }
 
 /**
- * Day/night factor shared conceptually with sunDimming, but independent of sun
- * bearing. Below civil twilight there is no daylight; above +6° it is full.
- * An unreadable elevation falls back to daylight so an unavailable sun entity
- * does not make a plan look like permanent night.
+ * Day/night factor shared with the visual language of sunDimming, but
+ * independent of sun bearing. Below civil twilight there is no daylight;
+ * above +6° it is full. Between them use smoothstep rather than a linear ramp,
+ * so dawn/dusk start and finish gently instead of changing slope at the two
+ * thresholds. An unreadable elevation falls back to daylight so an unavailable
+ * sun entity does not make a plan look like permanent night.
  */
 export function ambientDaylightDayFactor(elevation: unknown): number {
   const e = typeof elevation === "number" ? elevation : Number(elevation);
   if (!Number.isFinite(e)) return 1;
   if (e <= SUN_ELEVATION_NIGHT) return 0;
   if (e >= SUN_ELEVATION_DAY) return 1;
-  return (e - SUN_ELEVATION_NIGHT) / (SUN_ELEVATION_DAY - SUN_ELEVATION_NIGHT);
+  const t = (e - SUN_ELEVATION_NIGHT) / (SUN_ELEVATION_DAY - SUN_ELEVATION_NIGHT);
+  return t * t * (3 - 2 * t);
 }
 
 function areaLongSide(area: Area): number {
@@ -237,6 +259,58 @@ function areaLongSide(area: Area): number {
     maxY = Math.max(maxY, p.y);
   }
   return Math.max(1, maxX - minX, maxY - minY);
+}
+
+/**
+ * Deterministic patch geometry for an SVG renderer.
+ *
+ * The patch itself is deliberately broader than a direct-sun beam and must be
+ * clipped to its Area polygon by the renderer. That is what makes it read as a
+ * soft window-side wash rather than another ray. Its opacity carries only the
+ * daylight/opening strength; the renderer is free to use a linear/radial mask
+ * for the final visual softness without changing source classification.
+ */
+export function ambientDaylightPatches(
+  area: Area,
+  sources: readonly AmbientOpeningSource[],
+  elevation: unknown,
+  transmission: (openingId: string) => number = () => 1,
+  opts: AmbientDaylightOptions = {},
+): AmbientDaylightPatch[] {
+  const { strength, depth, spread } = normalizedOptions(opts);
+  const day = ambientDaylightDayFactor(elevation);
+  if (!(day > 0) || !(strength > 0)) return [];
+
+  const reach = areaLongSide(area) * depth;
+  const out: AmbientDaylightPatch[] = [];
+  for (const source of sources) {
+    if (source.areaId !== area.id) continue;
+    const t = clamp01(transmission(source.openingId), 0);
+    const opacity = Math.max(0, Math.min(1, strength * day * t));
+    if (!(opacity > 0)) continue;
+
+    const tangentX = -source.inwardY;
+    const tangentY = source.inwardX;
+    const nearHalf = Math.max(1, source.length / 2);
+    const farHalf = nearHalf + reach * spread;
+    const farX = source.x + source.inwardX * reach;
+    const farY = source.y + source.inwardY * reach;
+
+    out.push({
+      openingId: source.openingId,
+      areaId: source.areaId,
+      points: [
+        { x: source.x - tangentX * nearHalf, y: source.y - tangentY * nearHalf },
+        { x: source.x + tangentX * nearHalf, y: source.y + tangentY * nearHalf },
+        { x: farX + tangentX * farHalf, y: farY + tangentY * farHalf },
+        { x: farX - tangentX * farHalf, y: farY - tangentY * farHalf },
+      ],
+      gradientStart: { x: source.x, y: source.y },
+      gradientEnd: { x: farX, y: farY },
+      opacity,
+    });
+  }
+  return out;
 }
 
 /**
