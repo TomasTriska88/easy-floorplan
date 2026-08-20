@@ -43,12 +43,10 @@ describe("ambient daylight prototype", () => {
     expect(openingAdjacentAreas(win, [room])).toHaveLength(1);
     const sources = ambientOpeningSources([room], [win]);
     expect(sources).toHaveLength(1);
-    expect(sources[0]).toMatchObject({
-      openingId: "north-window",
-      areaId: "bedroom",
-      inwardX: 0,
-      inwardY: 1,
-    });
+    expect(sources[0]?.openingId).toBe("north-window");
+    expect(sources[0]?.areaId).toBe("bedroom");
+    expect(sources[0]?.inwardX).toBeCloseTo(0, 12);
+    expect(sources[0]?.inwardY).toBeCloseTo(1, 12);
   });
 
   it("does not turn an opening shared by two rooms into a second sky source", () => {
