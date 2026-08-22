@@ -128,6 +128,10 @@ import {
 } from "./skins";
 import { actionForGesture, executeAction, hasAction, itemIsInteractive } from "./actions";
 import { actionHandler } from "./action-handler";
+import {
+  ambientDaylightWatchedEntities,
+  renderAmbientDaylightLayer,
+} from "./ambient-daylight-integration";
 
 /**
  * Which floor each plan was last viewed on, keyed by its floor-id set (issue
@@ -189,6 +193,9 @@ export class FloorplanCard extends LitElement {
       furniture: config.furniture ?? [],
     };
     this._watchedEntities = collectWatchedEntities(this._config);
+    for (const entityId of ambientDaylightWatchedEntities(this._config)) {
+      this._watchedEntities.add(entityId);
+    }
     // Restore the floor this plan was last viewed on (issue #81). Only when
     // this instance has no floor of its own yet — a live floor switch always
     // wins — and only if that floor still exists.
@@ -895,6 +902,16 @@ export class FloorplanCard extends LitElement {
                   ${renderArea(a, areaColor(a, a.entity ? this.hass?.states[a.entity]?.state : undefined))}
                 </g>`;
             })}
+            ${renderAmbientDaylightLayer(
+              active,
+              c,
+              this.hass,
+              `${this._wallMaskId}-ambient`,
+              {
+                amount: (o) => this._openingAmount(o),
+                secondAmount: (o) => this._openingSecond(o)?.amount,
+              }
+            )}
             <!-- Dead spaces (issue #88): the regions the walls seal off that no
                  door or window reaches, hatched. Above the room fills, so a
                  region someone has also drawn an area over still reads as
