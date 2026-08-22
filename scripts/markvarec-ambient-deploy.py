@@ -4,9 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 
@@ -68,11 +66,26 @@ def container_sha(path: str) -> str:
     return out.split()[0]
 
 
+def container_mode(path: str) -> tuple[str, str]:
+    out = docker('exec', 'homeassistant', 'stat', '-c', '%u:%g %a', path, capture=True)
+    owner, mode = out.split()
+    return owner, mode
+
+
+def apply_mode(reference: str, target: str) -> None:
+    owner, mode = container_mode(reference)
+    docker('exec', 'homeassistant', 'chown', owner, target)
+    docker('exec', 'homeassistant', 'chmod', mode, target)
+
+
 def main() -> None:
     if sha256_file(BUILD) != NEW_HASH:
         raise SystemExit('validated build hash mismatch')
     if container_sha(JS) != OLD_HASH:
         raise SystemExit('production JS changed since audit')
+
+    # Leftover staging files from a failed pre-swap attempt are never live.
+    docker('exec', 'homeassistant', 'rm', '-f', JS_STAGE, STORE_STAGE)
 
     with tempfile.TemporaryDirectory(prefix='markvarec-ambient-') as td:
         td_path = Path(td)
@@ -95,15 +108,13 @@ def main() -> None:
         after = card_digest(card, strip_ambient=True)
         if after != CARD_STRIPPED_HASH:
             raise SystemExit(f'card invariant mismatch after patch: {after}')
-        new_full = card_digest(card, strip_ambient=False)
         patched_copy.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
 
         # Stage both artifacts and validate them before touching the live paths.
         docker('cp', str(BUILD), f'homeassistant:{JS_STAGE}')
         docker('cp', str(patched_copy), f'homeassistant:{STORE_STAGE}')
-        docker('exec', 'homeassistant', 'sh', '-lc',
-               f"chown --reference='{JS}' '{JS_STAGE}'; chmod --reference='{JS}' '{JS_STAGE}'; "
-               f"chown --reference='{STORE}' '{STORE_STAGE}'; chmod --reference='{STORE}' '{STORE_STAGE}'")
+        apply_mode(JS, JS_STAGE)
+        apply_mode(STORE, STORE_STAGE)
         if container_sha(JS_STAGE) != NEW_HASH:
             raise SystemExit('staged JS hash mismatch')
 
