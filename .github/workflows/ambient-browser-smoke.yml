@@ -1,0 +1,124 @@
+name: Ambient browser smoke
+
+on:
+  pull_request:
+    branches:
+      - feature/ambient-daylight
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Install browser harness
+        run: |
+          npm install --no-save --package-lock=false playwright
+          npx playwright install chromium
+      - name: Run real-browser compositing smoke
+        run: |
+          cat > /tmp/ambient-browser-smoke.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import { readFile } from 'node:fs/promises';
+
+          const browser = await chromium.launch({ headless: true });
+          const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+          await page.setContent('<!doctype html><html><body style="margin:0;background:#111"></body></html>');
+          const bundle = await readFile('dist/easy-floorplan-card.js', 'utf8');
+          await page.addScriptTag({ content: bundle, type: 'module' });
+
+          const result = await page.evaluate(async () => {
+            await customElements.whenDefined('easy-floorplan-card');
+            const card = document.createElement('easy-floorplan-card');
+            document.body.append(card);
+            card.setConfig({
+              type: 'custom:easy-floorplan-card',
+              width: 400,
+              height: 300,
+              ambientDaylight: true,
+              sunlight: false,
+              walls: [],
+              openings: [
+                { id: 'north-window', type: 'window', x: 200, y: 0, length: 100, angle: 0 },
+              ],
+              items: [],
+              texts: [],
+              furniture: [],
+              trackers: [],
+              areas: [
+                {
+                  id: 'bedroom',
+                  name: 'Bedroom',
+                  points: [
+                    { x: 0, y: 0 },
+                    { x: 400, y: 0 },
+                    { x: 400, y: 300 },
+                    { x: 0, y: 300 },
+                  ],
+                },
+              ],
+            });
+            const hass = (elevation) => ({
+              states: {
+                'sun.sun': { state: elevation === 'unavailable' ? 'unavailable' : 'above_horizon', attributes: { elevation } },
+              },
+              themes: {}, config: {}, services: {}, entities: {}, devices: {},
+              callService() {}, callApi() { return Promise.resolve({}); }, connection: {},
+            });
+            card.hass = hass(25);
+            await card.updateComplete;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+            const root = card.shadowRoot;
+            const patch = root?.querySelector('.fp-ambient-daylight-patch');
+            if (!patch) throw new Error('ambient daylight patch was not rendered in Chromium');
+            const ambient = root.querySelector('.fp-ambient-daylight');
+            const area = root.querySelector('.area-tap-target');
+            if (!ambient || !area) throw new Error('missing area/ambient layer');
+            if (!(area.compareDocumentPosition(ambient) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+              throw new Error('ambient layer is not after Area fill in live DOM');
+            }
+            if (root.querySelector('.fp-sunbeam')) throw new Error('direct sunlight rendered while sunlight:false');
+
+            const attrFill = patch.getAttribute('fill') || '';
+            const attrFilter = patch.getAttribute('filter') || '';
+            const computed = getComputedStyle(patch);
+            const computedFill = computed.fill || '';
+            const computedFilter = computed.filter || '';
+            if (!attrFill.startsWith('url(#')) throw new Error(`renderer fill lost: ${attrFill}`);
+            if (!computedFill.includes('url(')) throw new Error(`CSS overrode gradient fill: ${computedFill}`);
+            if (!attrFilter.startsWith('url(#')) throw new Error(`renderer blur filter lost: ${attrFilter}`);
+            if (!computedFilter.includes('url(')) throw new Error(`CSS overrode blur filter: ${computedFilter}`);
+
+            card.hass = hass('unavailable');
+            await card.updateComplete;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            if (root.querySelector('.fp-ambient-daylight-patch')) {
+              throw new Error('ambient daylight did not fail dark on unavailable sun elevation');
+            }
+
+            card.hass = hass(25);
+            await card.updateComplete;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            if (!root.querySelector('.fp-ambient-daylight-patch')) {
+              throw new Error('ambient daylight did not recover after valid sun elevation returned');
+            }
+
+            return { attrFill, computedFill, attrFilter, computedFilter };
+          });
+
+          console.log(JSON.stringify(result, null, 2));
+          await browser.close();
+          JS
+          node /tmp/ambient-browser-smoke.mjs
