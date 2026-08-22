@@ -28,7 +28,7 @@ jobs:
           npx playwright install chromium
       - name: Run real-browser compositing smoke
         run: |
-          cat > /tmp/ambient-browser-smoke.mjs <<'JS'
+          cat > .ambient-browser-smoke.mjs <<'JS'
           import { chromium } from 'playwright';
           import { readFile } from 'node:fs/promises';
 
@@ -121,4 +121,4 @@ jobs:
           console.log(JSON.stringify(result, null, 2));
           await browser.close();
           JS
-          node /tmp/ambient-browser-smoke.mjs
+          node .ambient-browser-smoke.mjs
