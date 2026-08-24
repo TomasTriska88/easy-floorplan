@@ -27,7 +27,7 @@ jobs:
         run: |
           git diff --check
           ACTUAL=$(git diff --name-only | sort)
-          EXPECTED=$(printf '%s\n' README.md src/editor-forms.test.ts src/editor-forms.ts src/render.test.ts src/render.ts src/types.ts | sort)
+          EXPECTED=$(printf '%s\n' README.md src/editor-forms.test.ts src/editor-forms.ts src/editor.ts src/render.test.ts src/render.ts src/types.ts | sort)
           test "$ACTUAL" = "$EXPECTED" || { echo "Unexpected patch surface:"; echo "$ACTUAL"; exit 1; }
           test -z "$(git diff --name-only -- 'src/ambient-daylight*')"
       - name: Type-check
