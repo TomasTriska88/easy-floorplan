@@ -1,4 +1,3 @@
-# Retiggered after the workflow file exists on the branch so the push path is observed.
 name: Capture ambient daylight review screenshots
 
 on:
@@ -7,6 +6,9 @@ on:
       - tmp/ambient-daylight-v154
     paths:
       - .github/workflows/capture-ambient-review.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -85,8 +87,9 @@ jobs:
           p.write_text(json.dumps(data, indent=2))
           PY
           docker compose -f docker/docker-compose.yml start homeassistant
+          ACCESS_TOKEN=$(python3 -c "import json; print(json.load(open('/tmp/tokens.json'))['access_token'])")
           for i in $(seq 1 90); do
-            if curl -fsS http://127.0.0.1:8123/api/ >/dev/null; then exit 0; fi
+            if curl -fsS http://127.0.0.1:8123/api/ -H "Authorization: Bearer ${ACCESS_TOKEN}" >/dev/null; then exit 0; fi
             sleep 2
           done
           docker compose -f docker/docker-compose.yml logs --no-color homeassistant
