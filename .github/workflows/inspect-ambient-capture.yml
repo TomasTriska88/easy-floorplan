@@ -1,3 +1,4 @@
+# Triggered after the inspector workflow already exists on the branch.
 name: Inspect ambient capture run
 
 on:
