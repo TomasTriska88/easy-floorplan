@@ -1,0 +1,200 @@
+name: Capture ambient daylight review screenshots
+
+on:
+  push:
+    branches:
+      - tmp/ambient-daylight-v154
+    paths:
+      - .github/workflows/capture-ambient-review.yml
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build feature and pin the real dev-container sun to solar noon
+        run: |
+          npm run build
+          node docker/sun-at.mjs 12
+          node docker/prepare.mjs
+      - name: Start the repository Home Assistant dev container
+        run: |
+          docker compose -f docker/docker-compose.yml up -d
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8123/api/onboarding >/tmp/onboarding.json; then
+              cat /tmp/onboarding.json
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker/docker-compose.yml logs --no-color homeassistant
+          exit 1
+      - name: Create a throwaway local reviewer account and finish onboarding
+        run: |
+          CLIENT_ID='http://127.0.0.1:8123/'
+          curl -fsS -X POST http://127.0.0.1:8123/api/onboarding/users \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"Floorplan Review","username":"reviewer","password":"review-only-local","client_id":"http://127.0.0.1:8123/","language":"en"}' \
+            > /tmp/user.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/user.json'))
+          assert data.get('auth_code'), data
+          open('/tmp/auth_code','w').write(data['auth_code'])
+          PY
+          curl -fsS -X POST http://127.0.0.1:8123/auth/token \
+            -d "client_id=${CLIENT_ID}" \
+            -d 'grant_type=authorization_code' \
+            --data-urlencode "code=$(cat /tmp/auth_code)" \
+            > /tmp/tokens.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('/tmp/tokens.json'))
+          assert data.get('access_token') and data.get('refresh_token') and data.get('expires_in'), data
+          PY
+          for i in $(seq 1 30); do
+            if test -f docker/config/.storage/onboarding && grep -q '"user"' docker/config/.storage/onboarding; then break; fi
+            sleep 1
+          done
+          docker compose -f docker/docker-compose.yml stop homeassistant
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('docker/config/.storage/onboarding')
+          assert p.exists(), 'onboarding store was not created'
+          data=json.loads(p.read_text())
+          data['version']=4
+          data['minor_version']=1
+          data['key']='onboarding'
+          data['data']={'done':['user','core_config','analytics','integration']}
+          p.write_text(json.dumps(data, indent=2))
+          PY
+          docker compose -f docker/docker-compose.yml start homeassistant
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8123/api/ >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker compose -f docker/docker-compose.yml logs --no-color homeassistant
+          exit 1
+      - name: Freeze sample generators and record the real sun state
+        run: |
+          ACCESS_TOKEN=$(python3 -c "import json; print(json.load(open('/tmp/tokens.json'))['access_token'])")
+          curl -fsS -X POST http://127.0.0.1:8123/api/services/input_boolean/turn_off \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d '{"entity_id":"input_boolean.history_generator"}' >/tmp/generator-off.json
+          curl -fsS http://127.0.0.1:8123/api/states/sun.sun \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" > /tmp/sun.json
+          python3 - <<'PY'
+          import json
+          s=json.load(open('/tmp/sun.json'))
+          e=s.get('attributes',{}).get('elevation')
+          assert isinstance(e,(int,float)) and e >= 6, s
+          print('sun.sun elevation:', e)
+          PY
+      - name: Install Chromium driver
+        run: |
+          python3 -m pip install --disable-pip-version-check playwright
+          python3 -m playwright install --with-deps chromium
+      - name: Create deterministic screenshot helper
+        run: |
+          cat > /tmp/capture.py <<'PY'
+          import json, sys, time
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          out=Path(sys.argv[1])
+          expected=int(sys.argv[2])
+          tokens=json.load(open('/tmp/tokens.json'))
+          tokens.update({
+              'hassUrl':'http://127.0.0.1:8123',
+              'clientId':'http://127.0.0.1:8123/',
+              'expires':int(time.time()*1000)+int(tokens['expires_in'])*1000,
+          })
+          token_js=json.dumps(tokens)
+          with sync_playwright() as p:
+              browser=p.chromium.launch()
+              context=browser.new_context(viewport={'width':1440,'height':1000}, device_scale_factor=1)
+              context.add_init_script(f'''if (location.host === "127.0.0.1:8123") {{ localStorage.setItem("hassTokens", JSON.stringify({token_js})); }}''')
+              page=context.new_page()
+              page.goto('http://127.0.0.1:8123/floorplan-demo/plan', wait_until='domcontentloaded', timeout=120000)
+              card=page.locator('easy-floorplan-card').first
+              card.wait_for(state='visible', timeout=120000)
+              page.add_style_tag(content='*,*::before,*::after{animation:none!important;transition:none!important;}')
+              page.wait_for_timeout(3000)
+              nodes=page.locator('.fp-ambient-daylight').count()
+              patches=page.locator('.fp-ambient-daylight-patch').count()
+              if expected == 0:
+                  assert nodes == 0 and patches == 0, (nodes, patches)
+              else:
+                  assert nodes > 0 and patches > 0, (nodes, patches)
+              out.parent.mkdir(parents=True, exist_ok=True)
+              card.screenshot(path=str(out), animations='disabled')
+              print(json.dumps({'ambient_nodes':nodes,'ambient_patches':patches,'path':str(out)}))
+              browser.close()
+          PY
+      - name: Capture before with the opt-in disabled
+        run: |
+          python3 /tmp/capture.py review/ambient-daylight-before.png 0 | tee /tmp/before.json
+      - name: Enable only ambient daylight in the same seeded plan
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('docker/config/floorplan-demo.yaml')
+          text=p.read_text()
+          needle='            sunDimming: true\n'
+          assert text.count(needle)==1, text.count(needle)
+          p.write_text(text.replace(needle, needle+'            ambientDaylight: true\n', 1))
+          PY
+          node docker/prepare.mjs --reseed
+      - name: Capture after with ambient daylight enabled
+        run: |
+          python3 /tmp/capture.py review/ambient-daylight-after.png 1 | tee /tmp/after.json
+          test "$(sha256sum review/ambient-daylight-before.png | cut -d' ' -f1)" != "$(sha256sum review/ambient-daylight-after.png | cut -d' ' -f1)"
+      - name: Record provenance and publish review assets outside the feature diff
+        run: |
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          sun=json.load(open('/tmp/sun.json'))
+          before=json.loads(Path('/tmp/before.json').read_text().strip().splitlines()[-1])
+          after=json.loads(Path('/tmp/after.json').read_text().strip().splitlines()[-1])
+          meta = [
+            'feature_source=dc5cdd9837ef3c74f81198dcc255df3df63bafab',
+            'upstream_base=288146baaf9e27f784826b273c2f728ac22ce016',
+            'environment=repository Home Assistant dev container (ghcr.io/home-assistant/home-assistant:stable)',
+            'direct_sunlight=false',
+            'before_ambientDaylight=false',
+            'after_ambientDaylight=true',
+            f"sun_state={sun.get('state')}",
+            f"sun_elevation={sun.get('attributes',{}).get('elevation')}",
+            f"before_ambient_nodes={before['ambient_nodes']}",
+            f"before_ambient_patches={before['ambient_patches']}",
+            f"after_ambient_nodes={after['ambient_nodes']}",
+            f"after_ambient_patches={after['ambient_patches']}",
+          ]
+          Path('review/ambient-daylight-dev-container.txt').write_text('\n'.join(meta)+'\n')
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add review/ambient-daylight-before.png review/ambient-daylight-after.png review/ambient-daylight-dev-container.txt
+          git diff --cached --check
+          git commit -m "chore: add ambient daylight review screenshots"
+          git push origin HEAD:tmp/ambient-daylight-v154
+      - name: Show Home Assistant logs on failure
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs --no-color homeassistant || true
