@@ -145,6 +145,14 @@ replace_once(
 )
 
 replace_once(
+    "src/editor.ts",
+    '''    ["Shape", ["type", "motion", "length", "sash", "hinge", "opens", "slide", "style", "angle"]],
+''',
+    '''    ["Shape", ["type", "motion", "staticClosed", "length", "sash", "hinge", "opens", "slide", "style", "angle"]],
+''',
+)
+
+replace_once(
     "src/render.test.ts",
     '''describe("openingDefaultOpen", () => {
   it("draws only swing doors open by default; windows and sliding openings closed", () => {
@@ -216,6 +224,14 @@ replace_once(
   });
 
   it("sliding opening shows slide + style, hides hinge; biparting hides slide", () => {
+''',
+)
+
+replace_once(
+    "src/editor-forms.test.ts",
+    '''    ["type", "motion", "length", "sash", "hinge", "opens", "slide", "style", "angle"],
+''',
+    '''    ["type", "motion", "staticClosed", "length", "sash", "hinge", "opens", "slide", "style", "angle"],
 ''',
 )
 
