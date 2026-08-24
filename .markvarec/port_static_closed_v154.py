@@ -56,20 +56,26 @@ replace_once(
     '''  fields.push({
     name: "entity",
     label: "Entity",
+    // Says locks are usable, because nothing else would: a lock is neither a
+    // contact nor a cover, and its states are `locked` / `unlocked` rather
+    // than anything that looks like open/closed (issue #176).
     helper: twoLeaves
-      ? "Drives the first leaf; type and motion follow its device class"
-      : "Type and motion follow the entity's device class",
-    selector: { entity: { filter: [{ domain: ["binary_sensor", "cover"] }] } },
+      ? "Contact, cover or lock. Drives the first leaf; type and motion follow its device class"
+      : "Contact, cover or lock — a lock reads unlocked as open. Type and motion follow its device class",
+    selector: { entity: { filter: [{ domain: OPENING_ENTITY_DOMAINS }] } },
   });
   // One sensor per leaf (issues #145, #159). Only a two-leaved opening has a
 ''',
     '''  fields.push({
     name: "entity",
     label: "Entity",
+    // Says locks are usable, because nothing else would: a lock is neither a
+    // contact nor a cover, and its states are `locked` / `unlocked` rather
+    // than anything that looks like open/closed (issue #176).
     helper: twoLeaves
-      ? "Drives the first leaf; type and motion follow its device class"
-      : "Type and motion follow the entity's device class",
-    selector: { entity: { filter: [{ domain: ["binary_sensor", "cover"] }] } },
+      ? "Contact, cover or lock. Drives the first leaf; type and motion follow its device class"
+      : "Contact, cover or lock — a lock reads unlocked as open. Type and motion follow its device class",
+    selector: { entity: { filter: [{ domain: OPENING_ENTITY_DOMAINS }] } },
   });
   if (motion === "swing" && o.type === "door" && !o.entity) {
     fields.push({
