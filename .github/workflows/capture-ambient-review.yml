@@ -1,3 +1,4 @@
+# Retiggered after the workflow file exists on the branch so the push path is observed.
 name: Capture ambient daylight review screenshots
 
 on:
@@ -168,7 +169,7 @@ jobs:
       - name: Record provenance and publish review assets outside the feature diff
         run: |
           python3 - <<'PY'
-          import json, re
+          import json
           from pathlib import Path
           sun=json.load(open('/tmp/sun.json'))
           before=json.loads(Path('/tmp/before.json').read_text().strip().splitlines()[-1])
