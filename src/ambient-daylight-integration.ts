@@ -15,13 +15,6 @@ export function ambientDaylightEnabled(
   return config?.ambientDaylight === true;
 }
 
-/** Extra HA entities the host card must observe for this opt-in layer. */
-export function ambientDaylightWatchedEntities(
-  config: Pick<FloorplanCardConfig, "ambientDaylight"> | null | undefined,
-): readonly string[] {
-  return ambientDaylightEnabled(config) ? ["sun.sun"] : [];
-}
-
 export interface AmbientDaylightOpeningState {
   /** Primary opening travel, normalized to 0..1 by the card's existing resolver. */
   amount(opening: Opening): number;

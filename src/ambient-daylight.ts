@@ -238,8 +238,8 @@ export function ambientOpeningTransmission(
  * must never make the card invent daylight. The next valid HA state restores it.
  */
 export function ambientDaylightDayFactor(elevation: unknown): number {
-  const e = typeof elevation === "number" ? elevation : Number(elevation);
-  if (!Number.isFinite(e)) return 0;
+  if (typeof elevation !== "number" || !Number.isFinite(elevation)) return 0;
+  const e = elevation;
   if (e <= SUN_ELEVATION_NIGHT) return 0;
   if (e >= SUN_ELEVATION_DAY) return 1;
   const t = (e - SUN_ELEVATION_NIGHT) / (SUN_ELEVATION_DAY - SUN_ELEVATION_NIGHT);

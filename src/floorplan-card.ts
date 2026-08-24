@@ -128,10 +128,7 @@ import {
 } from "./skins";
 import { actionForGesture, executeAction, hasAction, itemIsInteractive } from "./actions";
 import { actionHandler } from "./action-handler";
-import {
-  ambientDaylightWatchedEntities,
-  renderAmbientDaylightLayer,
-} from "./ambient-daylight-integration";
+import { renderAmbientDaylightLayer } from "./ambient-daylight-integration";
 
 /**
  * Which floor each plan was last viewed on, keyed by its floor-id set (issue
@@ -193,9 +190,6 @@ export class FloorplanCard extends LitElement {
       furniture: config.furniture ?? [],
     };
     this._watchedEntities = collectWatchedEntities(this._config);
-    for (const entityId of ambientDaylightWatchedEntities(this._config)) {
-      this._watchedEntities.add(entityId);
-    }
     // Restore the floor this plan was last viewed on (issue #81). Only when
     // this instance has no floor of its own yet — a live floor switch always
     // wins — and only if that floor still exists.

@@ -113,6 +113,13 @@ describe("ambient daylight prototype", () => {
     expect(ambientDaylightDayFactor(Number.NaN)).toBe(0);
   });
 
+  it("fails dark instead of coercing missing or non-numeric elevations to zero", () => {
+    expect(ambientDaylightDayFactor(null)).toBe(0);
+    expect(ambientDaylightDayFactor("")).toBe(0);
+    expect(ambientDaylightDayFactor(" ")).toBe(0);
+    expect(ambientDaylightDayFactor([])).toBe(0);
+  });
+
   it("disappears at night even with a valid exterior window", () => {
     const room = rect("bedroom", 0, 0, 400, 300);
     const sources = ambientOpeningSources([room], [opening("window", 200, 0)]);

@@ -1,11 +1,8 @@
 import { nothing } from "lit";
 import { describe, expect, it } from "vitest";
 import type { Floor, FloorplanCardConfig, HomeAssistant } from "./types";
-import {
-  ambientDaylightEnabled,
-  ambientDaylightWatchedEntities,
-  renderAmbientDaylightLayer,
-} from "./ambient-daylight-integration";
+import { ambientDaylightEnabled, renderAmbientDaylightLayer } from "./ambient-daylight-integration";
+import { collectWatchedEntities } from "./render";
 
 function config(extra: Partial<FloorplanCardConfig> = {}): FloorplanCardConfig {
   return {
@@ -67,12 +64,12 @@ function hassWithElevation(elevation: unknown): HomeAssistant {
 }
 
 describe("ambient daylight host integration", () => {
-  it("is a strict opt-in with an explicit sun watcher contract", () => {
+  it("is a strict opt-in and registers its sun input in the central watcher set", () => {
     expect(ambientDaylightEnabled(config())).toBe(false);
     expect(ambientDaylightEnabled(config({ ambientDaylight: false }))).toBe(false);
     expect(ambientDaylightEnabled(config({ ambientDaylight: true }))).toBe(true);
-    expect(ambientDaylightWatchedEntities(config())).toEqual([]);
-    expect(ambientDaylightWatchedEntities(config({ ambientDaylight: true }))).toEqual(["sun.sun"]);
+    expect(collectWatchedEntities(config())).not.toContain("sun.sun");
+    expect(collectWatchedEntities(config({ ambientDaylight: true }))).toContain("sun.sun");
   });
 
   it("returns no layer while disabled or without Area geometry", () => {
