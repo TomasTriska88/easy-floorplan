@@ -139,8 +139,12 @@ jobs:
               browser.close()
           PY
       - name: Capture before with the opt-in disabled
-        run: python3 /tmp/capture.py review/ambient-daylight-before.png 0 | tee /tmp/before.json
-      - name: Enable only ambient daylight in the same seeded plan
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 /tmp/capture.py review/ambient-daylight-before.png 0 | tee /tmp/before.json
+      - name: Enable only ambient daylight in the same seeded plan and reload HA storage
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -150,9 +154,26 @@ jobs:
           assert text.count(needle)==1, text.count(needle)
           p.write_text(text.replace(needle, needle+'            ambientDaylight: true\n', 1))
           PY
+          # prepare.mjs rewrites the Lovelace storage file. Stop HA first so it
+          # cannot flush its in-memory pre-reseed dashboard back over that file.
+          docker compose -f docker/docker-compose.yml stop homeassistant
           node docker/prepare.mjs --reseed
+          docker compose -f docker/docker-compose.yml start homeassistant
+          ACCESS_TOKEN=$(python3 -c "import json; print(json.load(open('/tmp/tokens.json'))['access_token'])")
+          for i in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:8123/api/ \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" >/tmp/api-after-reseed.json; then
+              cat /tmp/api-after-reseed.json
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker/docker-compose.yml logs --no-color homeassistant
+          exit 1
       - name: Capture after with ambient daylight enabled
+        shell: bash
         run: |
+          set -o pipefail
           python3 /tmp/capture.py review/ambient-daylight-after.png 1 | tee /tmp/after.json
           test "$(sha256sum review/ambient-daylight-before.png | cut -d' ' -f1)" != "$(sha256sum review/ambient-daylight-after.png | cut -d' ' -f1)"
       - name: Record provenance and publish review assets outside the feature diff
