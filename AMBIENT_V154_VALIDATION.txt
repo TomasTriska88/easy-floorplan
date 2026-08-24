@@ -1,0 +1,5 @@
+validated_source=dc5cdd9837ef3c74f81198dcc255df3df63bafab
+node=v24.19.0
+typecheck=pass
+vitest=pass
+build=pass
