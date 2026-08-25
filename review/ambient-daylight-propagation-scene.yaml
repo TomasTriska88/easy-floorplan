@@ -1,0 +1,56 @@
+views:
+  - title: Ambient propagation review
+    path: plan
+    type: panel
+    cards:
+      - type: custom:easy-floorplan-card
+        width: 1200
+        height: 600
+        grid: 20
+        snap: 0
+        background: "#e5e7eb"
+        showDeadSpaces: false
+        sunDimming: false
+        sunlight: false
+        ambientDaylight: true
+        walls:
+          - { id: north, x1: 80, y1: 90, x2: 1120, y2: 90 }
+          - { id: east, x1: 1120, y1: 90, x2: 1120, y2: 510 }
+          - { id: south, x1: 1120, y1: 510, x2: 80, y2: 510 }
+          - { id: west, x1: 80, y1: 510, x2: 80, y2: 90 }
+          - { id: divider-ab, x1: 440, y1: 90, x2: 440, y2: 510 }
+          - { id: divider-bc, x1: 780, y1: 90, x2: 780, y2: 510 }
+        openings:
+          - { id: west-window, type: window, x: 80, y: 300, length: 250, angle: 90 }
+          - { id: north-window, type: window, x: 265, y: 90, length: 220, angle: 0 }
+          - { id: door-ab, type: door, x: 440, y: 330, length: 120, angle: 90 }
+          - { id: door-bc, type: door, x: 780, y: 330, length: 120, angle: 90 }
+        items: []
+        texts: []
+        furniture: []
+        trackers: []
+        areas:
+          - id: room-a
+            color: "#475569"
+            opacity: 1
+            points:
+              - { x: 80, y: 90 }
+              - { x: 440, y: 90 }
+              - { x: 440, y: 510 }
+              - { x: 80, y: 510 }
+          - id: room-b
+            color: "#475569"
+            opacity: 1
+            points:
+              - { x: 440, y: 90 }
+              - { x: 780, y: 90 }
+              - { x: 780, y: 510 }
+              - { x: 440, y: 510 }
+          - id: room-c
+            color: "#475569"
+            opacity: 1
+            points:
+              - { x: 780, y: 90 }
+              - { x: 1120, y: 90 }
+              - { x: 1120, y: 510 }
+              - { x: 780, y: 510 }
