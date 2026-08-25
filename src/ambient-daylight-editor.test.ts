@@ -25,16 +25,57 @@ describe("ambient daylight editor contract", () => {
     expect(form.data.ambientDaylight).toBe(false);
   });
 
-  it("stores only an explicit enabled ambient option", () => {
-    const form = projectReliefForm(config());
-    expect(form.toPatch({ ambientDaylight: true })).toEqual({ ambientDaylight: true });
-    expect(form.toPatch({ ambientDaylight: false })).toEqual({ ambientDaylight: undefined });
+  it("shows room-to-room propagation only while ambient daylight is enabled", () => {
+    const off = projectReliefForm(config());
+    expect(off.fields.some((field) => field.name === "ambientDaylightPropagation")).toBe(false);
+
+    const on = projectReliefForm(config({ ambientDaylight: true }));
+    expect(on.fields.slice(0, 3).map((field) => field.name)).toEqual([
+      "ambientDaylight",
+      "ambientDaylightPropagation",
+      "sunlight",
+    ]);
+    expect(on.data.ambientDaylightPropagation).toBe(false);
+    expect(on.fields.find((field) => field.name === "ambientDaylightPropagation")?.helper).toContain(
+      "fading in each room",
+    );
   });
 
-  it("keeps ambient daylight enabled when direct sunlight is switched off", () => {
-    const form = projectReliefForm(config({ ambientDaylight: true, sunlight: true }));
-    const patch = form.toPatch({ ambientDaylight: true, sunlight: false });
+  it("stores only explicit ambient opt-ins and clears propagation with its parent", () => {
+    const form = projectReliefForm(config({ ambientDaylight: true }));
+
+    expect(form.toPatch({ ambientDaylightPropagation: true })).toEqual({
+      ambientDaylightPropagation: true,
+    });
+    expect(form.toPatch({ ambientDaylightPropagation: false })).toEqual({
+      ambientDaylightPropagation: undefined,
+    });
+    expect(
+      form.toPatch({
+        ambientDaylight: false,
+        ambientDaylightPropagation: true,
+      }),
+    ).toEqual({
+      ambientDaylight: undefined,
+      ambientDaylightPropagation: undefined,
+    });
+  });
+
+  it("keeps ambient daylight and propagation enabled when direct sunlight is switched off", () => {
+    const form = projectReliefForm(
+      config({
+        ambientDaylight: true,
+        ambientDaylightPropagation: true,
+        sunlight: true,
+      }),
+    );
+    const patch = form.toPatch({
+      ambientDaylight: true,
+      ambientDaylightPropagation: true,
+      sunlight: false,
+    });
     expect(patch.ambientDaylight).toBe(true);
+    expect(patch.ambientDaylightPropagation).toBe(true);
     expect(patch.sunlight).toBeUndefined();
   });
 });
