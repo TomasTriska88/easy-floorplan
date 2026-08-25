@@ -53,7 +53,7 @@ function ambientTopologySignature(floor: Pick<Floor, "areas" | "openings">): str
     signature += "|";
   }
   for (const opening of floor.openings) {
-    signature += `${opening.id}:${opening.x},${opening.y},${opening.length}|`;
+    signature += `${opening.id}:${opening.x},${opening.y},${opening.length},${opening.angle ?? 0}|`;
   }
   return signature;
 }
