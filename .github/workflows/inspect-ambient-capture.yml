@@ -1,0 +1,43 @@
+# Triggered after the inspector workflow already exists on the branch.
+name: Inspect ambient capture run
+
+on:
+  push:
+    branches:
+      - tmp/ambient-daylight-v154
+    paths:
+      - .github/workflows/inspect-ambient-capture.yml
+
+permissions:
+  actions: read
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Record latest capture status and failed log
+        run: |
+          mkdir -p review
+          gh run list --workflow capture-ambient-review.yml --limit 3 --json databaseId,headSha,status,conclusion,createdAt > review/ambient-capture-runs.json
+          RUN_ID=$(python3 - <<'PY'
+          import json
+          runs=json.load(open('review/ambient-capture-runs.json'))
+          assert runs, 'no capture workflow run found'
+          print(runs[0]['databaseId'])
+          PY
+          )
+          gh run view "$RUN_ID" --log-failed > review/ambient-capture-failed.log || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add review/ambient-capture-runs.json review/ambient-capture-failed.log
+          git diff --cached --check
+          git commit -m "chore: record ambient capture diagnostics"
+          git push origin HEAD:tmp/ambient-daylight-v154
