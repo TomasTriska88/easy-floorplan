@@ -1,0 +1,41 @@
+name: Make ambient visual-inspection previews
+
+on:
+  push:
+    branches:
+      - tmp/ambient-review-visual-inspect
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tmp/ambient-review-visual-inspect
+      - name: Downscale exact captured PNGs for visual inspection
+        run: |
+          python3 -m pip install --disable-pip-version-check pillow
+          python3 - <<'PY'
+          from PIL import Image
+          for name in ('before','after'):
+              src=f'review/ambient-daylight-{name}.png'
+              dst=f'review/ambient-daylight-{name}-inspect.jpg'
+              im=Image.open(src).convert('RGB')
+              im.thumbnail((240,144), Image.Resampling.LANCZOS)
+              im.save(dst, quality=55, optimize=True)
+              print(name, im.size)
+          PY
+      - name: Commit previews only on temporary inspection branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add review/ambient-daylight-before-inspect.jpg review/ambient-daylight-after-inspect.jpg
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "chore: add temporary ambient inspection previews"
+          git push origin HEAD:tmp/ambient-review-visual-inspect
