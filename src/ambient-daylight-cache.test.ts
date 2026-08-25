@@ -38,6 +38,14 @@ describe("ambient daylight topology cache", () => {
     expect(second).not.toBe(first);
   });
 
+  it("invalidates when an opening rotates in place", () => {
+    const f = floor();
+    const first = ambientDaylightTopologyForFloor(f);
+    f.openings[1]!.angle = 0;
+    const second = ambientDaylightTopologyForFloor(f);
+    expect(second).not.toBe(first);
+  });
+
   it("invalidates when Area geometry changes in place", () => {
     const f = floor();
     const first = ambientDaylightTopologyForFloor(f);
