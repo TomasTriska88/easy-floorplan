@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - pr204-publish-stage-20260829
+    paths:
+      - ".pr204-publish/READY"
 
 permissions:
   contents: write
