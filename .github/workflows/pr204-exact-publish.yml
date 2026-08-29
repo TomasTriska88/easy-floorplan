@@ -1,0 +1,40 @@
+name: PR 204 exact publish
+
+on:
+  push:
+    branches:
+      - pr204-publish-stage-20260829
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and publish exact reviewed commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat .pr204-publish/bundle.part*.b64 | tr -d '\n' | base64 -d > /tmp/pr204.bundle
+          echo "08ed4c96fc27a4e39c56971e12b42a12bf8b177cfb8903c9e9af09dc70631f58  /tmp/pr204.bundle" | sha256sum -c -
+
+          git fetch https://github.com/nicosandller/easy-floorplan.git main
+          test "$(git rev-parse FETCH_HEAD)" = "90e6c25eab99a19d680c97e27ba92d94ee83490e"
+
+          git bundle verify /tmp/pr204.bundle
+          git fetch /tmp/pr204.bundle HEAD:refs/remotes/pr204/candidate
+          test "$(git rev-parse refs/remotes/pr204/candidate)" = "02fff7aa25d8aa271179ae89959452ff55d0d328"
+          test "$(git rev-parse 'refs/remotes/pr204/candidate^{tree}')" = "07c5b6d066a546976b626b4206e82c092c2395a5"
+          test "$(git rev-parse refs/remotes/pr204/candidate^)" = "90e6c25eab99a19d680c97e27ba92d94ee83490e"
+
+          git fetch origin feature/ambient-daylight
+          test "$(git rev-parse FETCH_HEAD)" = "dc5cdd9837ef3c74f81198dcc255df3df63bafab"
+
+          git push --force-with-lease=refs/heads/feature/ambient-daylight:dc5cdd9837ef3c74f81198dcc255df3df63bafab \
+            origin refs/remotes/pr204/candidate:refs/heads/feature/ambient-daylight
