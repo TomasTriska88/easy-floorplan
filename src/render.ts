@@ -644,6 +644,111 @@ export function openingClearFraction(o: Opening, amount: number, secondAmount?: 
 }
 
 /**
+ * How much of an opening's gap a lamp's cast pool passes through — the same
+ * question {@link openingClearFraction} answers, except glass admits its
+ * whole gap however its sash is sitting, the same rule {@link
+ * openingSunFraction} already applies to sunlight and by the same field:
+ * {@link openingIsGlazed}. `glazed` means one thing — is this opening glass —
+ * and a lamp's light passing through glass same as sunlight does is that one
+ * fact read twice, not two different rules that happen to agree.
+ *
+ * One exception sunlight doesn't need: a **roll-motion** window is a blind,
+ * shutter, shade, curtain or awning bound as the opening's own entity (an
+ * auto-detected `device_class`, see {@link openingFromDeviceClass}) — a
+ * covering standing in for the glass behind it, not the glass itself. Glazed
+ * by the same default every window gets, it would read as always-clear no
+ * matter how far down it actually is, defeating the one thing binding it was
+ * for. So it keeps {@link openingClearFraction}'s answer regardless of
+ * `glazed` — the roll-up rule {@link openingClearFraction}'s own docs
+ * describe, honoured here too.
+ *
+ * A shutter — the separate `shutterEntity` layered over an opening — overrides
+ * the glass, same priority {@link openingSunFraction} gives it: rolled down,
+ * it blocks a lamp's pool same as it blocks the sun, whatever glass sits
+ * behind it. `shutter` is `undefined` where none is bound, so an opening
+ * without one is judged on itself alone. Unlike the glass rule above, this
+ * one is not window-only — any opening with a `shutterEntity` reads it.
+ *
+ * Every other opening — an ordinary door, an opaque slider, a roll-up —
+ * keeps {@link openingClearFraction}'s answer untouched; only real glass,
+ * open or shut, is pinned to fully clear.
+ */
+export function glowClearFraction(
+  o: Opening,
+  amount: number,
+  secondAmount?: number,
+  shutter?: number,
+): number {
+  if (shutter !== undefined && shutter <= 0) return 0;
+  if (openingIsGlazed(o) && openingMotion(o) !== "roll") return 1;
+  return openingClearFraction(o, amount, secondAmount);
+}
+
+/**
+ * The same answer as {@link glowClearFraction}, placed: which part of the
+ * opening the pool comes through, for {@link wallsLightPassesThrough}.
+ *
+ * Glass and a shut shutter are whole-opening answers and need no placing —
+ * all of it or none of it. Everything else defers to {@link
+ * openingClearSpan}, which is where a double door's open leaf stops being
+ * drawn as a gap in the middle (issue #219).
+ */
+export function glowClearSpan(
+  o: Opening,
+  amount: number,
+  secondAmount?: number,
+  shutter?: number,
+): [number, number] {
+  if (shutter !== undefined && shutter <= 0) return [0, 0];
+  if (openingIsGlazed(o) && openingMotion(o) !== "roll") return [0, 1];
+  return openingClearSpan(o, amount, secondAmount);
+}
+
+/**
+ * Where the clear part of an opening actually is, as a `[start, end]` pair of
+ * fractions along its own length — 0 at the jamb the symbol is drawn from, 1
+ * at the other, mirrored by `flipH` exactly as the drawing is.
+ *
+ * {@link openingClearFraction} says how *much* is clear; this says *where*,
+ * and the two always agree on the amount (`end - start` is that fraction).
+ *
+ * It exists for the double door with a sensor on each leaf (issue #219). Each
+ * leaf covers its own half and swings out of it from the middle, so one leaf
+ * open clears the half that leaf was covering — not the middle. Placed
+ * centrally, as the wall gap always was, a lamp in the next room threw its
+ * pool through the shut half of the doorway and half of the open half, which
+ * is what the reporter saw.
+ *
+ * Everything else keeps the centred gap it has always had. That is still an
+ * approximation for a slider — a single panel really clears the side it slid
+ * away from — but it is one this function is not being asked to fix, and
+ * moving those would change how every existing plan lights up. A double door
+ * with unequal leaves is the case where centring is not close: it is off by a
+ * quarter of the opening, and the door is drawn plainly showing which half is
+ * open.
+ */
+export function openingClearSpan(
+  o: Opening,
+  amount: number,
+  secondAmount?: number,
+): [number, number] {
+  const clear = openingClearFraction(o, amount, secondAmount);
+  const centred: [number, number] = [(1 - clear) / 2, (1 + clear) / 2];
+  if (openingMotion(o) !== "swing" || openingSash(o) !== "double") return centred;
+  // Each leaf is hinged at its own jamb and covers its own half, so its
+  // projection on the wall shrinks toward that jamb as it swings: the first
+  // leaf clears outward from the middle to `0.5 - a1/2`, the second to
+  // `0.5 + a2/2`. Both open by the same amount and this *is* the centred
+  // span, which is why a single-sensor double door is untouched.
+  const a1 = Math.max(0, Math.min(1, amount));
+  const a2 = Math.max(0, Math.min(1, secondAmount ?? amount));
+  const span: [number, number] = [0.5 - a1 / 2, 0.5 + a2 / 2];
+  // `flipH` swaps which jamb each leaf hangs on, so the clear half swaps with
+  // it — the same mirror {@link openingMirror} applies to the symbol.
+  return o.flipH ? [1 - span[1], 1 - span[0]] : span;
+}
+
+/**
  * The walls as **light** meets them (issue #143): the plan's walls with a gap
  * cut wherever an opening is currently open.
  *
@@ -658,36 +763,53 @@ export function openingClearFraction(o: Opening, amount: number, secondAmount?: 
  * drawn from, so a closed door still blocks, a door opening on its sensor lets
  * light through as it swings, and an unbound door — which this card draws open,
  * with its swing arc — lights the room beyond it without anything to configure.
- * A window behaves the same way: shut it blocks, open it spills light outside,
- * which is what an open window does.
+ *
+ * A window is the one exception, and it is the caller's rule rather than this
+ * function's: a lamp's pool admits light however the sash is sitting, so a
+ * caller wanting that reaches for {@link glowClearFraction} instead of {@link
+ * openingClearFraction}. This function itself stays agnostic — it just cuts
+ * the gap it is handed.
  *
  * The caller supplies how much of each opening is clear — see
- * {@link openingClearFraction}, which is where a two-panel slider's two
- * sensors are reconciled into one number.
+ * {@link openingClearFraction} and {@link glowClearFraction}, which is where a
+ * two-panel slider's two sensors are reconciled into one number.
  *
- * The gap is `length * fraction`, **centred**, and that is an approximation
- * worth naming. A half-open slider really clears one side rather than the
- * middle; `converging` is the sharpest case, since its two leaves stack in the
- * centre and what actually clears is a quarter at each jamb — so the gap is
- * the right *size* and the wrong *place*. The amount of light through the wall
- * is right, where it lands is approximate, and the pool is a soft radial wash
- * that hides most of the difference. Fixing it properly means letting one
- * opening contribute several intervals rather than one, which is a change to
- * this function's contract rather than to its arithmetic.
+ * It may supply **where** instead: a `[start, end]` pair of fractions along
+ * the opening places the gap exactly (see {@link openingClearSpan}), which is
+ * what a double door with one leaf open needs — the clear half is that leaf's
+ * half, not the middle (issue #219). A plain number is still centred, which is
+ * what every caller that has no better answer wants.
+ *
+ * Centring is an approximation worth naming wherever it is still used. A
+ * half-open slider really clears the side it slid away from; `converging` is
+ * the sharpest case, since its two leaves stack in the centre and what
+ * actually clears is a quarter at each jamb — so the gap is the right *size*
+ * and the wrong *place*. Those want more than one interval per opening, which
+ * this function's one-gap-per-opening shape still cannot say; the amount of
+ * light through the wall is right and where it lands is approximate, which a
+ * soft radial pool hides most of.
  */
 export function wallsLightPassesThrough(
   walls: readonly Wall[],
   openings: readonly Opening[],
-  openAmount: (o: Opening) => number,
+  openAmount: (o: Opening) => number | readonly [number, number],
 ): Wall[] {
   // Resolve each opening once, not once per wall. `openAmount` reads hass on
   // every call, and asking it inside the wall loop made that walls × openings
   // state lookups per render — hundreds, on a plan of any size, to answer the
   // same handful of questions.
-  const open: Array<{ o: Opening; amount: number }> = [];
+  const open: Array<{ o: Opening; span: [number, number] }> = [];
   for (const o of openings) {
-    const amount = Math.max(0, Math.min(1, openAmount(o)));
-    if (amount > 0) open.push({ o, amount });
+    const answer = openAmount(o);
+    // A number is a width with no opinion about placement, so it centres; a
+    // pair is a placement already worked out. Both are clamped here rather
+    // than trusted, since either can arrive from a caller's own arithmetic.
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    const span: [number, number] =
+      typeof answer === "number"
+        ? [(1 - clamp(answer)) / 2, (1 + clamp(answer)) / 2]
+        : [clamp(Math.min(answer[0], answer[1])), clamp(Math.max(answer[0], answer[1]))];
+    if (span[1] > span[0]) open.push({ o, span });
   }
   // Nothing open is the common case — a plan of shut doors, or one with no
   // openings at all. Hand back the same array, so a caller can compare
@@ -707,14 +829,28 @@ export function wallsLightPassesThrough(
 
     // Where each open opening sits along this wall, as a [0,1] interval.
     const gaps: Array<[number, number]> = [];
-    for (const { o, amount } of open) {
+    for (const { o, span } of open) {
       // Openings snap onto walls, but they are stored free of them, so an
       // opening belongs to this wall only if it actually lies on it.
       if (pointWallDist(o.x, o.y, w) > OPENING_ON_WALL_EPS) continue;
       const tc = ((o.x - w.x1) * dx + (o.y - w.y1) * dy) / len2;
-      const half = (o.length * amount) / 2 / len;
-      const a = Math.max(0, tc - half);
-      const b = Math.min(1, tc + half);
+      // The span runs along the opening's own axis, and the wall may run the
+      // other way: a doorway drawn at 180° has its first jamb at the wall's
+      // far end. Project the opening's +x onto the wall to find out which,
+      // or a placed gap lands mirrored — invisible until one leaf opens.
+      const dirSign =
+        Math.cos((o.angle * Math.PI) / 180) * dx + Math.sin((o.angle * Math.PI) / 180) * dy >= 0
+          ? 1
+          : -1;
+      const off = (s: number) => (dirSign * (s - 0.5) * o.length) / len;
+      // Running the wall backwards flips the span's ends past each other, so
+      // order them after projecting rather than before: taken as given, `b >
+      // a` fails and the gap is silently dropped — a doorway that stops
+      // letting light through because of the direction its wall was drawn.
+      const t0 = tc + off(span[0]);
+      const t1 = tc + off(span[1]);
+      const a = Math.max(0, Math.min(t0, t1));
+      const b = Math.min(1, Math.max(t0, t1));
       if (b > a) gaps.push([a, b]);
     }
     if (!gaps.length) {
@@ -3282,8 +3418,15 @@ export const SUN_REACH = 0.34;
  */
 export const SUN_REACH_REF = 30;
 /**
- * How far the falloff spreads ACROSS the beam, as a multiple of the gap's
- * width — the other half of the ellipse the light dies into.
+ * How far the falloff spreads ACROSS the beam, as a multiple of **half** the
+ * gap's width — the other half of the ellipse the light dies into.
+ *
+ * Half, because a gradient's `gradientTransform` scales its *semi*-axes: the
+ * ellipse reaches this far from the beam's middle, and the beam only has half
+ * its width to give on each side. Handed the whole width it ran nearly twice
+ * as wide as the polygon carrying it, so the outline sliced through light at
+ * about half strength all the way up both flanks — the hard diagonal edge in
+ * issue #206. Anything above 1 puts that edge back.
  *
  * The falloff is an ellipse fitted to the beam, not a circle. That is the
  * whole difference between a rounded tip and a flat one, and it took four
@@ -3293,7 +3436,7 @@ export const SUN_REACH_REF = 30;
  * window, 10% of the width. An ellipse squashed to the beam's own proportions
  * curves on the scale of its WIDTH instead, which is what reads as round.
  *
- * A shade under 1 means the light is already dimming at the gap's own edges,
+ * A shade under 1 means the light has died just inside the gap's own edges,
  * so the patch has soft flanks as well as a soft tip.
  */
 export const SUN_ACROSS = 0.95;
@@ -3698,6 +3841,10 @@ export function renderSunlight(
     const gx = gb.x - ga.x;
     const gy = gb.y - ga.y;
     const width = Math.abs(gx * dir.y - gy * dir.x) * clear(o);
+    // Half of it, because the gradient below is scaled by *semi*-axes: the
+    // ellipse reaches `across` from the beam's middle, and the beam only has
+    // half its width to give on each side (issue #206).
+    const halfWidth = width / 2;
     return {
       // The outline runs past the falloff, so the ellipse is what bounds the
       // patch and never the polygon's flat far edge.
@@ -3705,7 +3852,7 @@ export function renderSunlight(
       cx: o.x,
       cy: o.y,
       along,
-      across: Math.max(1, width * SUN_ACROSS),
+      across: Math.max(1, halfWidth * SUN_ACROSS),
       angle: (Math.atan2(dir.y, dir.x) * 180) / Math.PI,
       lightId: `${id}-b${i}`,
       shadeId: `${id}-s${i}`,

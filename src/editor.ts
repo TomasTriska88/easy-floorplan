@@ -67,7 +67,7 @@ import {
   resolveOpeningAmount,
   openingIsActive,
   wallsLightPassesThrough,
-  openingClearFraction,
+  glowClearSpan,
   openingHasTwoLeaves,
   secondLeafOf,
   renderGlowMask,
@@ -2836,8 +2836,10 @@ export class FloorplanCardEditor extends LitElement {
       ? wallsLightPassesThrough(floor.walls, floor.openings, (o) => {
           const amt = (id?: string) =>
             resolveOpeningAmount(o, id ? this.hass?.states[id] : undefined);
-          // Same reading as the card, second leaf included (issue #145).
-          return openingClearFraction(
+          // Same reading as the card, second leaf included (issue #145),
+          // glass admitted whole regardless of sash, and a shutter overriding
+          // that — all same as the card.
+          return glowClearSpan(
             o,
             amt(o.entity),
             o.secondaryEntity && openingHasTwoLeaves(o)
@@ -2845,7 +2847,8 @@ export class FloorplanCardEditor extends LitElement {
                   secondLeafOf(o),
                   this.hass?.states[o.secondaryEntity]
                 )
-              : undefined
+              : undefined,
+            o.shutterEntity ? shutterAmount(this.hass?.states[o.shutterEntity], o.shutterInvert) : undefined
           );
         })
       : floor.walls;
@@ -3267,10 +3270,10 @@ export class FloorplanCardEditor extends LitElement {
               }
               ${
                 this._draft
-                  ? svg`<line x1=${this._draft.x1} y1=${this._draft.y1}
+                  ? svg`<g class="fp-wall-neon"><line x1=${this._draft.x1} y1=${this._draft.y1}
                               x2=${this._draft.x2} y2=${this._draft.y2}
                               class="wall draft" mask=${`url(#${this._wallMaskId})`}
-                              stroke-width=${WALL_THICKNESS} />`
+                              stroke-width=${WALL_THICKNESS} /></g>`
                   : nothing
               }
               ${this._renderAreaDraft()}
@@ -3810,10 +3813,10 @@ export class FloorplanCardEditor extends LitElement {
         <line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
               class="wall-hit"
               @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "wall", id: w.id })} />
-        <line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
+        <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
               class="wall ${selected ? "selected" : ""}"
               mask=${`url(#${this._wallMaskId})`}
-              style=${wallStrokeStyle(w.thickness)} stroke-linecap="round" />
+              style=${wallStrokeStyle(w.thickness)} stroke-linecap="round" /></g>
         ${
           selected
             ? svg`
@@ -5262,13 +5265,20 @@ export class FloorplanCardEditor extends LitElement {
     line.wall {
       stroke: var(--fp-skin-wall, var(--primary-text-color));
       /* Same skin hooks as the card's .wall, so the canvas draws the weight
-         and glow the plan will actually have. */
+         and glow the plan will actually have. The glow itself is on
+         .fp-wall-neon, outside the doorway mask — see the note there. */
       stroke-width: var(--fp-skin-wall-width, 8);
-      filter: var(--fp-skin-wall-filter, none);
       /* The wide transparent .wall-hit line beneath handles selection/drag.
          Without this, the visible line (painted on top) swallows clicks on the
          wall body, so you could only grab it just *outside* the body. */
       pointer-events: none;
+    }
+    /* Neon, matching the card. Must stay on a group *outside* the doorway
+       mask: CSS applies filter before mask, so a filter on the wall itself is
+       computed from the uncut wall and its halo then survives the cut,
+       leaving a fringe that runs through every opening (#203). */
+    .fp-wall-neon {
+      filter: var(--fp-skin-wall-filter, none);
     }
     line.wall.selected {
       stroke: var(--primary-color, #03a9f4);

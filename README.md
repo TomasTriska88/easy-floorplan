@@ -218,7 +218,9 @@ window, a `blind` → a slider, a `garage` or `shutter` → a roll-up); adjust a
   exactly that. That means the two-panel sliders above, and any hinged double — a
   casement window (`sash: double`, the window default) or a double door. Leave it empty
   and both leaves follow the first entity, as they always have. The opening's own invert
-  switch covers both, and a tap still acts on the first.
+  switch covers both, and a tap still acts on the first. A lamp's pool follows the leaves
+  too: with one open, the light comes through *that* leaf's half of the doorway rather
+  than the middle.
 - **Orientation** — **Hinge** (left / right) and **Opens** (this side / other side) face a
   swing door any of four ways; they're pure mirrors (`flipH` / `flipV`), so the animation
   follows.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderOpening, renderSunlight, SUN_REACH } from "./render";
+import { renderOpening, renderSunlight, SUN_REACH, SUN_ACROSS } from "./render";
 import type { OpeningStyle } from "./render";
 import type { Opening, Wall } from "./types";
 import { nothing } from "lit";
@@ -139,6 +139,55 @@ describe("renderSunlight — the markup, not just the geometry", () => {
         expect(Math.hypot(u, v)).toBeGreaterThanOrEqual(1);
       }
     }
+  });
+
+  it("does not cut the beam's flanks while the light is still on them (#206)", () => {
+    // The far corners were already checked above; these are the near two — the
+    // gap's own ends, where the outline is at its narrowest. The falloff is
+    // scaled by *semi*-axes, and it was being handed the beam's whole width
+    // instead of half of it, so the ellipse ran nearly twice as wide as the
+    // polygon that carried it. The straight edge then sliced through light at
+    // roughly half strength, all the way up both sides: the hard diagonal
+    // boundary reported in #206.
+    for (const dir of [sun, { x: 0.72, y: 0.69 }, { x: -0.5, y: 0.87 }]) {
+      const markup = serialize(
+        renderSunlight([wall], [win], 400, 400, "sun", {
+          dir,
+          openAmount: () => 0,
+          shutterOpen: () => undefined,
+        })
+      );
+      const f = falloff(markup)!;
+      const pts = markup.match(/class="fp-sunbeam" points=([-\d., ]+)/)![1]!.trim().split(" ")
+        .map((q) => q.split(",").map(Number));
+      const rad = (-f.angle * Math.PI) / 180;
+      // Every corner, not just the far pair: the polygon may only ever clip
+      // the ellipse where the ellipse has already reached zero.
+      for (const i of [0, 1, 2, 3]) {
+        const dx = pts[i]![0]! - f.cx;
+        const dy = pts[i]![1]! - f.cy;
+        const u = (dx * Math.cos(rad) - dy * Math.sin(rad)) / f.along;
+        const v = (dx * Math.sin(rad) + dy * Math.cos(rad)) / f.across;
+        expect(Math.hypot(u, v)).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("fits the falloff to half the beam, since a gradient is scaled by semi-axes", () => {
+    // The arithmetic behind the test above, stated once so the next person
+    // changing SUN_ACROSS can see what it is a fraction *of*.
+    const markup = serialize(
+      renderSunlight([wall], [win], 400, 400, "sun", {
+        dir: sun,
+        openAmount: () => 0,
+        shutterOpen: () => undefined,
+      })
+    );
+    const f = falloff(markup)!;
+    // The window is 60 wide, square-on to a straight-down sun, so the beam is
+    // 60 across and the ellipse may reach at most 30 to either side of it.
+    expect(f.across).toBeCloseTo(30 * SUN_ACROSS, 6);
+    expect(f.across).toBeLessThanOrEqual(30);
   });
 
   it("a door ajar throws a narrower patch than one standing open", () => {
