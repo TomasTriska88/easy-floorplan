@@ -517,7 +517,40 @@ export interface FloorItem {
    * "Active" is the same domain-aware test the badge highlight uses
    * ({@link entityIsActive}), so a lock reads unlocked, a vacuum cleaning.
    */
+  // --- Extended hide logic for the entire item (Whole-Item) ---
   hideWhenInactive?: boolean;
+  enableHideByEntity?: boolean;
+  hideEntity?: string;
+  /** Attribute to read instead of the state for the hide condition. */
+  hideAttribute?: string;
+  hideMode?: "state" | "threshold";
+  hideState?: string;
+  /** Hide condition operator (includes !=). */
+  hideOperator?: "<" | "<=" | "==" | "!=" | ">=" | ">";
+  hideThreshold?: number;
+  hideInvert?: boolean;
+
+  // --- Extended hide logic for the Badge (Icon/Bubble) ---
+  enableHideBadgeByEntity?: boolean;
+  hideBadgeEntity?: string;
+  hideBadgeAttribute?: string;
+  hideBadgeMode?: "state" | "threshold";
+  /** Corresponds to the textual state match for the badge. */
+  hideBadgeMatch?: string;
+  hideBadgeOperator?: "<" | "<=" | "==" | "!=" | ">=" | ">";
+  hideBadgeThreshold?: number;
+  hideBadgeInvert?: boolean;
+
+  // --- Extended hide logic for the State Text ---
+  enableHideStateByEntity?: boolean;
+  hideStateEntity?: string;
+  hideStateAttribute?: string;
+  hideStateMode?: "state" | "threshold";
+  hideStateMatch?: string;
+  hideStateOperator?: "<" | "<=" | "==" | "!=" | ">=" | ">";
+  hideStateThreshold?: number;
+  hideStateInvert?: boolean;
+  /** End of Enable the extended hide logic */
   /** Badge diameter in pixels. Default 34. */
   size?: number;
   /** Icon rotation in degrees. Default 0. */
@@ -657,7 +690,36 @@ export interface FloorText {
   id: string;
   x: number;
   y: number;
-  text: string;
+  /**
+   * The words on the plan.
+   *
+   * With {@link entity} bound this becomes a **prefix** rather than the whole
+   * label: `PV` plus a reading of `1.2 kW` draws `PV 1.2 kW`. Left empty, the
+   * reading stands alone, which is the case issue #225 opened for — a number
+   * in the corner of the plan with nothing else to say about it.
+   *
+   * Optional since that became possible: with an entity bound the editor lets
+   * the field be emptied, and an emptied optional text field is stored as
+   * absent rather than as `""` (see `normalizeFormPatch`). Read it through
+   * `textLabel`, which is where the two are treated the same.
+   */
+  text?: string;
+  /**
+   * An entity whose reading this label shows (issue #225).
+   *
+   * Formatted the way Home Assistant would format it anywhere else, units and
+   * display precision included — so a power sensor reads `1.2 kW` here for the
+   * same reason it does in a Tile card, and rounding it is a matter of that
+   * entity's own display-precision setting rather than anything to configure
+   * twice.
+   */
+  entity?: string;
+  /**
+   * Show this attribute of {@link entity} instead of its state — a climate's
+   * `current_temperature` rather than `heat`. Same field, and the same
+   * formatter, as a device's `attribute` (issue #70).
+   */
+  attribute?: string;
   /** Font size in pixels. Default 16. */
   size?: number;
   /** Text color (CSS color / hex). Falls back to the theme text color. */

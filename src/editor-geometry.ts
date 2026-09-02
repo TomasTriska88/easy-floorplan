@@ -1,5 +1,5 @@
-import type { Area, AreaPoint, Floor, Wall } from "./types";
-import { polygonCentroid, pointInPolygon } from "./render";
+import type { Area, AreaPoint, Floor, RenderHass, Wall } from "./types";
+import { polygonCentroid, pointInPolygon, textLabel } from "./render";
 
 /** Element kinds addressable by the editor's selection model. */
 export type SelKind = "wall" | "opening" | "item" | "text" | "furniture" | "tracker" | "area";
@@ -363,13 +363,14 @@ function distToSegment(x: number, y: number, w: WallSegment): number {
  * unit-testable and agrees with what the user sees.
  *
  * `itemSize` / `textSize` supply the per-element defaults the caller renders
- * with, since those live in the card's config layer.
+ * with, since those live in the card's config layer, and `hass` is what lets a
+ * text's box be measured against the value it draws (issue #225).
  */
 export function elementsAtPoint(
   f: Floor,
   x: number,
   y: number,
-  opts: { itemSize: number; textSize: number; wallThickness: number }
+  opts: { itemSize: number; textSize: number; wallThickness: number; hass?: RenderHass }
 ): Sel[] {
   const hits: { sel: Sel; rank: number; order: number }[] = [];
   const push = (kind: SelKind, id: string, order: number) =>
@@ -381,8 +382,14 @@ export function elementsAtPoint(
   });
   f.texts.forEach((t, i) => {
     // Rough box: text is centered on (x, y); width scales with the string.
+    // The string *drawn*, not the one typed (issue #225): a label bound to an
+    // entity shows its reading, and the case the feature exists for — a bare
+    // number with no words at all — types nothing. Measured against `t.text`
+    // that label is pickable only through a sliver at its centre, and a click
+    // anywhere else on it falls through to whatever is underneath, which for a
+    // temperature written over a room is the room.
     const size = t.size ?? opts.textSize;
-    const hw = (size * 0.6 * Math.max(1, t.text?.length ?? 1)) / 2 + HIT.pad;
+    const hw = (size * 0.6 * Math.max(1, textLabel(opts.hass, t).length)) / 2 + HIT.pad;
     const hh = size / 2 + HIT.pad;
     const p = toLocal(x, y, t.x, t.y, t.angle ?? 0);
     if (Math.abs(p.x) <= hw && Math.abs(p.y) <= hh) push("text", t.id, i);

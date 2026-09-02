@@ -392,12 +392,22 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
   }
   // Named after what it flips — the opening's own leaf, which is a door or a
   // sash depending on what this is, the same way Leaves / Sashes above.
-  if (o.entity)
-    fields.push({
-      name: "invert",
-      label: o.type === "door" ? "Invert door animation" : "Invert window animation",
-      selector: { boolean: {} },
-    });
+  // Offered whether or not an entity is bound: with one, it flips which
+  // sensor reading counts as open; without one, it flips the type default a
+  // door or window draws with no sensor to ask (openingDefaultOpen) — so an
+  // unbound door can be drawn shut, or an unbound window drawn open.
+  fields.push({
+    name: "invert",
+    label: o.type === "door" ? "Invert door animation" : "Invert window animation",
+    helper: o.entity
+      ? undefined
+      : // Only a swing door draws open with no sensor to ask
+        // (openingDefaultOpen) — everything else, door or window, draws shut.
+        o.type === "door" && openingMotion(o) === "swing"
+        ? "No sensor bound — draws shut instead of open"
+        : "No sensor bound — draws open instead of shut",
+    selector: { boolean: {} },
+  });
   fields.push(angleField());
   // The opening's own badge (issue #154 follow-up). Offered for any bound
   // opening, but sold on the case that needs it: a raised roll-up has nothing
@@ -973,16 +983,16 @@ export function itemBadgeForm(it: FloorItem, badgeSource?: BadgeSourceInfo): For
 
 /**
  * Group 6: the optional visual extras, each offered only where it means
- * something — a ring on a thermostat says "something is happening here",
- * which is a lie, and nothing but a light has a colour to cast.
+ * something — a ring on a thermostat says "someone is here", which is a lie,
+ * and nothing but a light has a colour to cast.
  *
  * Returns `undefined` when this device qualifies for neither, so the editor
  * can leave the whole group out rather than print an empty heading.
  *
  * `deviceClass` is the entity's HA device class, resolved off `hass` at the
  * call site as the openings already do theirs: it is what separates a motion
- * or vibration sensor from a door contact, and so decides whether the ring is
- * offered at all (issues #127, #202).
+ * sensor from a door contact, and so decides whether the ring is offered at
+ * all (issue #127).
  */
 export function itemEffectsForm(it: FloorItem, deviceClass?: string): FormSpec | undefined {
   const ripple = itemHasRipple(it);
@@ -1053,6 +1063,251 @@ export function itemEffectsForm(it: FloorItem, deviceClass?: string): FormSpec |
   };
 }
 
+export function itemGroup7aForm(it: FloorItem): FormSpec {
+  const fields: FormField[] = [
+    {
+      name: "enableHideByEntity",
+      label: "Hide by condition (Entire Object)",
+      selector: { boolean: {} },
+    },
+  ];
+
+  // 1. Hide the whole device.
+  if (it.enableHideByEntity) {
+    const evalEntity = it.hideEntity || it.entity;
+
+    fields.push(
+      {
+        name: "hideEntity",
+        label: "Evaluation Entity (Optional)",
+        helper: "Leave empty to use the main object entity",
+        selector: { entity: {} },
+      },
+      {
+        name: "hideAttribute",
+        label: "Evaluation Attribute (Optional)",
+        helper: "Leave empty to use the entity's state instead of an attribute",
+        selector: { attribute: { entity_id: evalEntity } },
+      },
+      {
+        name: "hideMode",
+        label: "Condition Type",
+        selector: { select: { mode: "dropdown", options: [{ value: "state", label: "State Match" }, { value: "threshold", label: "Numeric Threshold" }] } },
+      },
+      {
+        name: "hideOperator",
+        label: "Operator",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: it.hideMode === "threshold"
+              ? [{ value: "<", label: "<" }, { value: "<=", label: "<=" }, { value: "==", label: "==" }, { value: "!=", label: "!=" }, { value: ">=", label: ">=" }, { value: ">", label: ">" }]
+              : [{ value: "==", label: "==" }, { value: "!=", label: "!=" }]
+          }
+        },
+      }
+    );
+
+    if (it.hideMode === "threshold") {
+      fields.push({
+        name: "hideThreshold",
+        label: "Threshold Value",
+        selector: { number: { mode: "box", step: "any" } },
+      });
+    } else {
+      fields.push({
+        name: "hideState",
+        label: "Hide State",
+        helper: it.hideAttribute
+          ? "Enter the exact attribute value that triggers the hide action"
+          : "Select the state that triggers the hide action",
+        selector: (it.hideAttribute || !evalEntity)
+          ? { text: {} }
+          : { state: { entity_id: evalEntity } },
+      });
+    }
+
+    fields.push({
+      name: "hideInvert",
+      label: "Invert condition",
+      helper: "Hide when condition is NOT met",
+      selector: { boolean: {} },
+    });
+  }
+
+  // 2. Hide the state text only.
+  fields.push({
+    name: "enableHideStateByEntity",
+    label: "Hide State by condition",
+    helper: "Hides only the state text below the icon based on a condition",
+    selector: { boolean: {} },
+  });
+
+  if (it.enableHideStateByEntity) {
+    const evalStateEntity = it.hideStateEntity || it.entity;
+
+    fields.push(
+      {
+        name: "hideStateEntity",
+        label: "State Eval. Entity (Optional)",
+        helper: "Leave empty to use the main object entity",
+        selector: { entity: {} },
+      },
+      {
+        name: "hideStateAttribute",
+        label: "State Eval. Attribute (Optional)",
+        helper: "Leave empty to use the entity's state instead of an attribute",
+        selector: { attribute: { entity_id: evalStateEntity } },
+      },
+      {
+        name: "hideStateMode",
+        label: "Condition Type",
+        selector: { select: { mode: "dropdown", options: [{ value: "state", label: "State Match" }, { value: "threshold", label: "Numeric Threshold" }] } },
+      },
+      {
+        name: "hideStateOperator",
+        label: "Operator",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: it.hideStateMode === "threshold"
+              ? [{ value: "<", label: "<" }, { value: "<=", label: "<=" }, { value: "==", label: "==" }, { value: "!=", label: "!=" }, { value: ">=", label: ">=" }, { value: ">", label: ">" }]
+              : [{ value: "==", label: "==" }, { value: "!=", label: "!=" }]
+          }
+        },
+      }
+    );
+
+    if (it.hideStateMode === "threshold") {
+      fields.push({
+        name: "hideStateThreshold",
+        label: "Threshold Value",
+        selector: { number: { mode: "box", step: "any" } },
+      });
+    } else {
+      fields.push({
+        name: "hideStateMatch",
+        label: "Hide State Match",
+        helper: it.hideStateAttribute
+          ? "Enter the exact attribute value that triggers hiding the text"
+          : "Select the state that triggers hiding the text",
+        selector: (it.hideStateAttribute || !evalStateEntity)
+          ? { text: {} }
+          : { state: { entity_id: evalStateEntity } },
+      });
+    }
+
+    fields.push({
+      name: "hideStateInvert",
+      label: "Invert condition",
+      helper: "Hide text when condition is NOT met",
+      selector: { boolean: {} },
+    });
+  }
+
+  // 3. Hide the badge (icon/bubble) only.
+  fields.push({
+    name: "enableHideBadgeByEntity",
+    label: "Hide Badge by condition",
+    helper: "Hides only the badge (icon/bubble) based on a condition",
+    selector: { boolean: {} },
+  });
+
+  if (it.enableHideBadgeByEntity) {
+    const evalBadgeEntity = it.hideBadgeEntity || it.entity;
+
+    fields.push(
+      {
+        name: "hideBadgeEntity",
+        label: "Badge Eval. Entity (Optional)",
+        helper: "Leave empty to use the main object entity",
+        selector: { entity: {} },
+      },
+      {
+        name: "hideBadgeAttribute",
+        label: "Badge Eval. Attribute (Optional)",
+        helper: "Leave empty to use the entity's state instead of an attribute",
+        selector: { attribute: { entity_id: evalBadgeEntity } },
+      },
+      {
+        name: "hideBadgeMode",
+        label: "Condition Type",
+        selector: { select: { mode: "dropdown", options: [{ value: "state", label: "State Match" }, { value: "threshold", label: "Numeric Threshold" }] } },
+      },
+      {
+        name: "hideBadgeOperator",
+        label: "Operator",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: it.hideBadgeMode === "threshold"
+              ? [{ value: "<", label: "<" }, { value: "<=", label: "<=" }, { value: "==", label: "==" }, { value: "!=", label: "!=" }, { value: ">=", label: ">=" }, { value: ">", label: ">" }]
+              : [{ value: "==", label: "==" }, { value: "!=", label: "!=" }]
+          }
+        },
+      }
+    );
+
+    if (it.hideBadgeMode === "threshold") {
+      fields.push({
+        name: "hideBadgeThreshold",
+        label: "Threshold Value",
+        selector: { number: { mode: "box", step: "any" } },
+      });
+    } else {
+      fields.push({
+        name: "hideBadgeMatch",
+        label: "Hide Badge Match",
+        helper: it.hideBadgeAttribute
+          ? "Enter the exact attribute value that triggers hiding the badge"
+          : "Select the state that triggers hiding the badge",
+        selector: (it.hideBadgeAttribute || !evalBadgeEntity)
+          ? { text: {} }
+          : { state: { entity_id: evalBadgeEntity } },
+      });
+    }
+
+    fields.push({
+      name: "hideBadgeInvert",
+      label: "Invert condition",
+      helper: "Hide badge when condition is NOT met",
+      selector: { boolean: {} },
+    });
+  }
+
+  return {
+    fields,
+    data: {
+      enableHideByEntity: it.enableHideByEntity ?? false,
+      hideEntity: it.hideEntity ?? "",
+      hideAttribute: it.hideAttribute ?? "",
+      hideMode: it.hideMode ?? "state",
+      hideState: it.hideState ?? "",
+      hideOperator: it.hideOperator ?? "==",
+      hideThreshold: it.hideThreshold ?? 0,
+      hideInvert: it.hideInvert ?? false,
+
+      enableHideStateByEntity: it.enableHideStateByEntity ?? false,
+      hideStateEntity: it.hideStateEntity ?? "",
+      hideStateAttribute: it.hideStateAttribute ?? "",
+      hideStateMode: it.hideStateMode ?? "state",
+      hideStateMatch: it.hideStateMatch ?? "",
+      hideStateOperator: it.hideStateOperator ?? "==",
+      hideStateThreshold: it.hideStateThreshold ?? 0,
+      hideStateInvert: it.hideStateInvert ?? false,
+
+      enableHideBadgeByEntity: it.enableHideBadgeByEntity ?? false,
+      hideBadgeEntity: it.hideBadgeEntity ?? "",
+      hideBadgeAttribute: it.hideBadgeAttribute ?? "",
+      hideBadgeMode: it.hideBadgeMode ?? "state",
+      hideBadgeMatch: it.hideBadgeMatch ?? "",
+      hideBadgeOperator: it.hideBadgeOperator ?? "==",
+      hideBadgeThreshold: it.hideBadgeThreshold ?? 0,
+      hideBadgeInvert: it.hideBadgeInvert ?? false,
+    },
+    toPatch: identity,
+  };
+}
 /** Group 7: when the device is drawn at all, and what a press does. */
 export function itemBehaviourForm(it: FloorItem): FormSpec {
   return {
@@ -1086,19 +1341,64 @@ export function itemBehaviourForm(it: FloorItem): FormSpec {
 }
 
 
-export function textForm(t: FloorText): FormSpec {
+/**
+ * `areaScope` narrows the entity picker to the room the label sits in, exactly
+ * as it does for a device or a piece of furniture — a reading placed in the
+ * kitchen is usually a kitchen entity.
+ */
+export function textForm(t: FloorText, areaScope?: AreaEntityScope): FormSpec {
+  const fields: FormField[] = [
+    {
+      name: "text",
+      label: "Text",
+      // Required only while nothing else fills the label. A text with no words
+      // and no entity is an invisible element, which is what this guarded
+      // against; with a reading bound the words are optional, and demanding
+      // them for a label that is only ever a number would be asking for a
+      // placeholder to delete.
+      required: !t.entity,
+      helper: t.entity ? "Shown in front of the reading — leave empty for the value alone" : undefined,
+      selector: { text: {} },
+    },
+    {
+      name: "entity",
+      label: "Entity",
+      helper: areaScopeHelper(areaScope, "Shows this entity's value, formatted as HA formats it"),
+      selector: areaScopedEntity(areaScope, t.entity),
+    },
+  ];
+  // Only once there is an entity to take an attribute from.
+  if (t.entity) {
+    fields.push({
+      name: "attribute",
+      label: "Attribute",
+      helper: "Show this attribute instead of the state (e.g. current_temperature)",
+      selector: { attribute: { entity_id: t.entity } },
+    });
+  }
+  fields.push(
+    {
+      name: "size",
+      label: "Size",
+      selector: { number: { min: 8, max: 200, mode: "slider", unit_of_measurement: "px" } },
+    },
+    angleField()
+  );
   return {
-    fields: [
-      { name: "text", label: "Text", required: true, selector: { text: {} } },
-      {
-        name: "size",
-        label: "Size",
-        selector: { number: { min: 8, max: 200, mode: "slider", unit_of_measurement: "px" } },
-      },
-      angleField(),
-    ],
-    data: { text: t.text, size: t.size ?? DEFAULT_TEXT_SIZE, angle: t.angle ?? 0 },
-    toPatch: identity,
+    fields,
+    data: {
+      text: t.text ?? "",
+      entity: t.entity ?? "",
+      attribute: t.attribute ?? "",
+      size: t.size ?? DEFAULT_TEXT_SIZE,
+      angle: t.angle ?? 0,
+    },
+    toPatch: (p) => {
+      // Unbinding the entity takes the attribute with it: left behind, it would
+      // silently reapply to whatever gets bound here next.
+      if ("entity" in p && !p.entity) return { ...p, attribute: undefined };
+      return p;
+    },
   };
 }
 

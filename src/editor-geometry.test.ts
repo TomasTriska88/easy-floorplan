@@ -13,7 +13,7 @@ import {
   cyclePick,
 } from "./editor-geometry";
 import type { OrigPos } from "./editor-geometry";
-import type { Area, Floor, Wall } from "./types";
+import type { Area, Floor, RenderHass, Wall } from "./types";
 
 const walls = [{ x1: 0, y1: 0, x2: 100, y2: 0 }];
 
@@ -212,6 +212,30 @@ describe("elementsAtPoint / cyclePick (issue #52)", () => {
     expect(elementsAtPoint(rotated, 100, 120, opts).map((s) => s.id)).toEqual(["fu"]);
     // …while the same distance horizontally misses.
     expect(elementsAtPoint(rotated, 180, 200, opts)).toEqual([]);
+  });
+
+  it("a bound text is pickable across the value it draws (issue #225)", () => {
+    // A bare reading over a room: no words typed, so the only thing on screen
+    // is the value — and the room polygon is underneath the whole of it.
+    const hass = {
+      states: { "sensor.pv": { state: "1.234", attributes: {} } },
+      formatEntityState: () => "1.234 kW",
+    } as unknown as RenderHass;
+    const withText = {
+      ...floor,
+      items: [], walls: [], openings: [], furniture: [], trackers: [],
+      texts: [{ id: "t", x: 100, y: 100, text: "", entity: "sensor.pv", size: 20 }],
+      areas: [{ id: "a", points: [
+        { x: 0, y: 0 }, { x: 400, y: 0 }, { x: 400, y: 400 }, { x: 0, y: 400 },
+      ] }],
+    } as unknown as Floor;
+    // 40 units off centre is well inside "1.234 kW" at 20px, and would have
+    // been outside a box measured against the empty typed string.
+    expect(elementsAtPoint(withText, 140, 100, opts).map((s) => s.kind)).toEqual(["area"]);
+    expect(elementsAtPoint(withText, 140, 100, { ...opts, hass }).map((s) => s.kind)).toEqual([
+      "text",
+      "area",
+    ]);
   });
 
   it("cyclePick steps down the stack on repeat clicks and wraps", () => {

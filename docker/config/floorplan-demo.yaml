@@ -13,7 +13,9 @@
 #                      light.kitchen_lights, light.office_rgbw_lights,
 #                      cover.living_room_window, cover.hall_window,
 #                      cover.garage_door, fan.living_room_fan,
-#                      device_tracker.demo_anne_therese
+#                      device_tracker.demo_anne_therese, climate.hvac,
+#                      weather.demo_weather_south, weather.demo_weather_north,
+#                      media_player.walkman
 #   from configuration.yaml
 #                      sensor.living_area_temperature,
 #                      sensor.living_area_humidity,
@@ -250,6 +252,44 @@ views:
                     x: 300
                     y: 300
                     kind: light
+                  # climate.hvac boots straight into "cool" (issue #206) --
+                  # its own state, never the literal "on" -- which reproduced
+                  # the report on its own: no active highlight, and the spin
+                  # below never played. It is also the one demo climate
+                  # entity whose hvac_modes include fan_only, so switching it
+                  # there from Developer Tools > Actions shows the forced
+                  # spin overriding this very iconAnimation.
+                  - id: i7
+                    entity: climate.hvac
+                    iconAnimation: spin
+                    x: 860
+                    y: 260
+                    kind: climate
+                  # A demo weather entity's condition is fixed for its
+                  # lifetime, so two side by side -- the same pairing
+                  # glow_warm/glow_cool use above -- is the only way to see
+                  # more than one WEATHER_CONDITION_ICONS entry on the plan
+                  # at once (issue #206): south is always sunny, north always
+                  # rainy.
+                  - id: i8
+                    entity: weather.demo_weather_south
+                    x: 260
+                    y: 460
+                    kind: generic
+                  - id: i9
+                    entity: weather.demo_weather_north
+                    x: 340
+                    y: 460
+                    kind: generic
+                  # Boots "playing" (issue #206). Call
+                  # media_player.media_pause from Developer Tools > Actions
+                  # and it reads "paused", stays lit, and switches to its own
+                  # pause glyph instead of "off" or the plain play icon.
+                  - id: i10
+                    entity: media_player.walkman
+                    x: 620
+                    y: 460
+                    kind: media_player
 
                 furniture:
                   # Issue #121: click it to go up. The card only makes it a

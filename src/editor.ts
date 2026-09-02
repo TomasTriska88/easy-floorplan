@@ -112,6 +112,7 @@ import {
   resolveIconAnimation,
   itemIconSize,
   itemLabelSize,
+  textLabel,
   labelPositionOf,
   itemReadings,
   itemHasLabel,
@@ -143,6 +144,7 @@ import {
   type Sel,
   type SelKind,
 } from "./editor-geometry";
+import { FrameCoalescer, rafScheduler } from "./frame-coalescer";
 import { applyCardConfig } from "./editor-save";
 import type { AreaEntityScope } from "./editor-forms";
 import {
@@ -175,6 +177,7 @@ import {
   textForm,
   trackerForm,
   wallForm,
+  itemGroup7aForm,
   type FormField,
   type FormSpec,
 } from "./editor-forms";
@@ -229,6 +232,29 @@ interface Drag {
   snapshot?: FloorplanCardConfig;
   /** The redo stack as it stood before the drag's history push cleared it. */
   priorFuture?: FloorplanCardConfig[];
+  /**
+   * Set if anything emitted while this drag was live. A drag normally emits
+   * nothing until it is released, which is what lets cancel restore the
+   * pre-drag config locally; if something did emit, the host has moved on and
+   * has to be told to go back.
+   */
+  emitted?: boolean;
+}
+
+/**
+ * One drag move, already resolved to canvas coordinates.
+ *
+ * Resolved where the event arrives rather than where it is applied: a pointer
+ * event carries screen coordinates, and turning those into canvas coordinates
+ * needs the SVG's CTM, which is live — scrolling the canvas (a plain wheel
+ * does exactly that) or zooming changes it. Transforming a frame later would
+ * read the *new* CTM against the *old* pointer position and place the element
+ * off by the scroll delta.
+ */
+interface DragMove {
+  x: number;
+  y: number;
+  altKey: boolean;
 }
 
 type Marquee = Rect;
@@ -372,6 +398,17 @@ export class FloorplanCardEditor extends LitElement {
 
   private _drag: Drag | null = null;
   /**
+   * Drag moves are applied once per animation frame. A pointer reports faster
+   * than the browser renders, and applying every raw move only queues work the
+   * frame cannot finish, so the element falls further behind the longer the
+   * drag lasts.
+   */
+  private _dragMoves = new FrameCoalescer<DragMove>(rafScheduler, (move) => {
+    if (this._drag) this._applyDrag(move);
+  });
+  /** A drag changed the config and the host has not been told yet. */
+  private _dragDirty = false;
+  /**
    * Where the last plain selection click landed, for click-cycling through
    * overlapping elements (issue #52). Cleared whenever the pointer lands
    * somewhere else, so cycling only happens on repeat clicks in one spot.
@@ -406,7 +443,7 @@ export class FloorplanCardEditor extends LitElement {
     if (!isTypingPath(ev.composedPath())) return;
     ev.preventDefault();
     ev.stopPropagation();
-    this._canvasWrap?.focus();
+    this._canvasWrap?.focus({ preventScroll: true });
   };
   private _onFocusIn = (ev: FocusEvent) => {
     // While the fullscreen popover is up, anything that pulls focus outside the
@@ -430,6 +467,20 @@ export class FloorplanCardEditor extends LitElement {
     this.removeEventListener("keydown", this._onHostKeyDown);
     window.removeEventListener("focusin", this._onFocusIn);
     if (this._applyResetTimer !== null) clearTimeout(this._applyResetTimer);
+    // HA's dialog reparents the editor, so this can land mid-drag. Removal
+    // takes the pointer capture with it, so the gesture is over either way:
+    // hand the host what the drag accumulated (_config is otherwise its only
+    // copy of the edit, and a save sees only what config-changed delivered),
+    // then end the gesture. Dropping the queued move rather than settling it
+    // commits the position the canvas last actually drew — settling would be
+    // safe too, now that a queued move carries no DOM dependency, but it would
+    // commit a position that was never rendered. Clearing _gesturePointer is
+    // not optional: it gates every new gesture, and the pointer it belongs to
+    // can no longer report.
+    this._dragMoves.cancel();
+    this._flushDrag();
+    this._drag = null;
+    this._gesturePointer = null;
     this._resetPinch();
     super.disconnectedCallback();
   }
@@ -505,7 +556,26 @@ export class FloorplanCardEditor extends LitElement {
 
   /** Live change to the active floor's elements (no history snapshot — for dragging). */
   private _emitFloor(partial: Partial<Floor>): void {
-    this._emit({ ...this._config, floors: this._patchFloors(partial) });
+    const config = { ...this._config, floors: this._patchFloors(partial) };
+    // A drag owns the config until pointerup. Emitting per move asks HA to
+    // re-render whatever card is being edited — for a stack, every child of it
+    // — and to echo the config back through setConfig, which stalls the gesture
+    // far longer than a frame. The canvas still follows the pointer: _config is
+    // @state, so assigning it repaints the editor without involving the host.
+    if (this._drag) {
+      this._config = config;
+      this._watchedEntities = collectWatchedEntities(config);
+      this._dragDirty = true;
+      return;
+    }
+    this._emit(config);
+  }
+
+  /** Hand the host what a drag accumulated — once, on release. */
+  private _flushDrag(): void {
+    if (!this._dragDirty) return;
+    this._dragDirty = false;
+    this._emit(this._config);
   }
 
   private _patchFloors(partial: Partial<Floor>): Floor[] {
@@ -804,6 +874,7 @@ export class FloorplanCardEditor extends LitElement {
   private _lastEmitted?: FloorplanCardConfig;
 
   private _emit(config: FloorplanCardConfig): void {
+    if (this._drag) this._drag.emitted = true;
     this._config = config;
     // Recompute here, not just in setConfig: real HA deep-equal-skips the
     // setConfig echo of our own emission, so entities bound during the
@@ -1108,7 +1179,7 @@ export class FloorplanCardEditor extends LitElement {
     if (ev.button !== 0) return;
     // One gesture at a time: a second touch must not hijack the state machine.
     if (this._gesturePointer !== null) return;
-    this._canvasWrap?.focus();
+    this._canvasWrap?.focus({ preventScroll: true });
     const raw = this._toVirtual(ev, false);
 
     if (this._tool === "wall") {
@@ -1167,6 +1238,9 @@ export class FloorplanCardEditor extends LitElement {
    * between — is dropped, so a canceled drag leaves no trace in undo.
    */
   private _cancelGesture(): void {
+    // Whatever the drag accumulated is about to be replaced by its snapshot.
+    this._dragMoves.cancel();
+    this._dragDirty = false;
     this._gesturePointer = null;
     this._draft = null;
     this._draftTracker = null;
@@ -1177,7 +1251,16 @@ export class FloorplanCardEditor extends LitElement {
     this._drag = null;
     if (drag?.moved && drag.snapshot) {
       this._history = this._history.filter((c) => c !== drag.snapshot);
-      this._emit(drag.snapshot);
+      if (drag.emitted) {
+        this._emit(drag.snapshot);
+      } else {
+        // Nothing emitted while the drag was live, so the host still holds
+        // exactly this config: restore locally and spare it a full re-render.
+        // _lastEmitted stays as it is — it still describes the last thing
+        // actually emitted.
+        this._config = drag.snapshot;
+        this._watchedEntities = collectWatchedEntities(drag.snapshot);
+      }
       // The push at first movement cleared the redo stack; a canceled drag
       // must be a complete no-op, so put it back.
       this._future = drag.priorFuture ?? [];
@@ -1228,11 +1311,14 @@ export class FloorplanCardEditor extends LitElement {
       this._marquee = { ...this._marquee, x1: raw.x, y1: raw.y };
       return;
     }
-    if (this._drag) this._applyDrag(ev);
+    if (this._drag) this._dragMoves.push({ ...this._toVirtual(ev, false), altKey: ev.altKey });
   }
 
   private _onCanvasUp(ev: PointerEvent): void {
     if (this._foreignPointer(ev)) return;
+    // Land on the last position the pointer reported, not on whatever the
+    // previous frame caught — settle while _drag is still set.
+    this._dragMoves.settle();
     this._gesturePointer = null;
     if (this._tool === "wall" && this._draft) {
       const d = this._draft;
@@ -1277,6 +1363,7 @@ export class FloorplanCardEditor extends LitElement {
     if (this._drag) {
       this._drag = null;
       this._releasePointer(ev);
+      this._flushDrag();
     }
   }
 
@@ -1305,6 +1392,7 @@ export class FloorplanCardEditor extends LitElement {
       itemSize: DEFAULT_ITEM_SIZE,
       textSize: DEFAULT_TEXT_SIZE,
       wallThickness: WALL_THICKNESS,
+      hass: this.hass,
     });
     const sameSpot =
       !!this._pickAnchor &&
@@ -1318,7 +1406,7 @@ export class FloorplanCardEditor extends LitElement {
     if (this._tool !== "select") return;
     ev.stopPropagation();
     if (this._gesturePointer !== null) return;
-    this._canvasWrap?.focus();
+    this._canvasWrap?.focus({ preventScroll: true });
     // Endpoint/vertex handles always operate on that single element; every
     // other click goes through the overlap-aware picker (issue #52).
     const explicitHandle = endpoint != null || areaVertex != null;
@@ -1374,9 +1462,8 @@ export class FloorplanCardEditor extends LitElement {
     return m;
   }
 
-  private _applyDrag(ev: PointerEvent): void {
+  private _applyDrag(p: DragMove): void {
     const drag = this._drag!;
-    const p = this._toVirtual(ev, false);
     // First *effective* movement: snapshot for undo now, not at pointerdown,
     // so a plain selection click — including the ~1px jitter real clicks and
     // taps produce — doesn't spam history or wipe the redo stack. Threshold
@@ -1394,7 +1481,7 @@ export class FloorplanCardEditor extends LitElement {
     // corners of other walls travel along (Alt detaches), so dragging a room
     // corner stretches the room (issue #30).
     if (drag.endpoint) {
-      const attach = ev.altKey ? [] : (drag.attached ?? []);
+      const attach = p.altKey ? [] : (drag.attached ?? []);
       // The moving cluster must not be a snap candidate for itself — the
       // dragged corner would stick to its own last emitted position.
       const moving = new Set<string>([
@@ -1470,7 +1557,7 @@ export class FloorplanCardEditor extends LitElement {
     // Whole-wall drag: shared corners of neighboring walls follow (issue #30),
     // unless Alt detaches or the neighbor is itself part of the selection
     // (then it already translated with the group).
-    if (drag.attached?.length && !ev.altKey) {
+    if (drag.attached?.length && !p.altKey) {
       const walls = (patch.walls ?? f.walls).map((w) => {
         let out = w;
         for (const a of drag.attached!) {
@@ -1499,7 +1586,7 @@ export class FloorplanCardEditor extends LitElement {
     // preventDefault suppresses native mousedown focusing, so focus explicitly.
     ev.preventDefault();
     if (this._gesturePointer !== null) return;
-    this._canvasWrap?.focus();
+    this._canvasWrap?.focus({ preventScroll: true });
     const pick = this._resolvePick(ev, sel);
     this._selectForPointer(ev, pick);
     this._drag = {
@@ -1518,15 +1605,17 @@ export class FloorplanCardEditor extends LitElement {
       this._cancelGesture();
       return;
     }
-    if (this._drag) this._applyDrag(ev);
+    if (this._drag) this._dragMoves.push({ ...this._toVirtual(ev, false), altKey: ev.altKey });
   }
 
   private _onOverlayUp(ev: PointerEvent): void {
     if (this._foreignPointer(ev)) return;
+    this._dragMoves.settle();
     this._gesturePointer = null;
     if (this._drag) {
       this._drag = null;
       this._releasePointer(ev, ev.currentTarget as Element);
+      this._flushDrag();
     }
   }
 
@@ -2994,7 +3083,7 @@ export class FloorplanCardEditor extends LitElement {
                 // Hand focus back to the canvas: while the <select> keeps it,
                 // isTypingPath swallows every shortcut — most visibly Ctrl+V
                 // after a cross-floor copy (issue #37).
-                this._canvasWrap?.focus();
+                this._canvasWrap?.focus({ preventScroll: true });
               }}
             >
               ${floors.map(
@@ -4203,7 +4292,7 @@ export class FloorplanCardEditor extends LitElement {
         @pointerup=${this._onOverlayUp}
         @pointercancel=${this._onPointerCancel}
       >
-        ${t.text || "…"}
+        ${textLabel(this.hass, t) || "…"}
       </div>
     `;
   }
@@ -4609,7 +4698,8 @@ export class FloorplanCardEditor extends LitElement {
                 : nothing
             )
           : nothing}
-        ${this._renderGroup("Behavior", this._renderForm(itemBehaviourForm(it), apply))}
+        ${this._renderGroup("Behaviour", this._renderForm(itemBehaviourForm(it), apply))}
+        ${this._renderGroup("Visibility", this._renderForm(itemGroup7aForm(it), apply))}
       `;
     }
 
@@ -4617,7 +4707,7 @@ export class FloorplanCardEditor extends LitElement {
       const t = this._floor().texts.find((x) => x.id === sel.id);
       if (!t) return html`${nothing}`;
       return html`
-        ${this._renderForm(textForm(t), (patch, live) =>
+        ${this._renderForm(textForm(t, this._areaEntitiesAt(t.x, t.y)), (patch, live) =>
           this._applyElementPatch("text", t.id, patch, live)
         )}
         ${this._renderColorRow({
@@ -5585,8 +5675,37 @@ export class FloorplanCardEditor extends LitElement {
     .stage.scale-plan {
       container-type: inline-size;
     }
+    /*
+     * The unit itself, declared twice on purpose.
+     *
+     * The fallback in var(--fp-u, 1px) is not the safety net it looks like: it
+     * fires when the property is *unset*, never when its value fails to
+     * resolve. A browser with no container queries parses the calc quite
+     * happily -- a custom property takes almost any token stream -- and then
+     * every property using it is invalid at computed-value time, so each falls
+     * back to its own initial value. Width becomes auto, and a badge collapses
+     * to its borders: about 3px, with its label landing on top of it because
+     * the item's box collapsed with it.
+     *
+     * So the plain value is declared first, and the container-query one only
+     * where it can actually be computed. One pixel per canvas unit is exactly
+     * what overlayScale fixed draws, which is the right thing to degrade to: a
+     * plan that looks like it did before canvas units existed, rather than one
+     * with 3px badges.
+     *
+     * The guard tests the unit as well as the property, because they are two
+     * features and only one of them is what the declaration is made of. A
+     * browser with container-type but no cqw would pass a check for the
+     * property and then fail on the value, which is the exact collapse this is
+     * here to stop. Test what is actually used; it costs one more clause.
+     */
     .stage.scale-plan .items {
-      --fp-u: calc(100cqw / var(--fp-plan-w));
+      --fp-u: 1px;
+    }
+    @supports (container-type: inline-size) and (width: 1cqw) {
+      .stage.scale-plan .items {
+        --fp-u: calc(100cqw / var(--fp-plan-w));
+      }
     }
     /* Label padding and offsets go to em so they track the text with the plan,
        exactly as the card's own scale-plan rules do. Hairlines stay px on

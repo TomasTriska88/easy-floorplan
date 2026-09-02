@@ -29,6 +29,7 @@ import type {
   RenderHass,
   HassEntity,
   FloorItem,
+  FloorText,
   OverlayScale,
   ActionConfig,
 } from "./types";
@@ -142,7 +143,16 @@ export function collectWatchedEntities(c: FloorplanCardConfig): Set<string> {
       // opening's second leaf above: miss one and that line of the label is
       // not frozen but *intermittent*, catching up only when some other
       // watched entity happens to move.
+      if (it.hideEntity) ids.add(it.hideEntity);
+      if (it.hideStateEntity) ids.add(it.hideStateEntity);
+      if (it.hideBadgeEntity) ids.add(it.hideBadgeEntity);
       for (const r of itemReadings(it)) if (r.entity) ids.add(r.entity);
+    }
+    // Entity-bound text (issue #225). Same trap as the furniture below and the
+    // areas after it: miss this and the number is painted once and then frozen,
+    // catching up only when some *other* watched entity happens to move.
+    for (const t of f.texts) {
+      if (t.entity) ids.add(t.entity);
     }
     // Entity-bound furniture (issue #82) — without this the card never
     // re-renders when the soil sensor moves, and the plant stays its
@@ -258,6 +268,37 @@ export function itemStateText(
   return item.attribute
     ? entityAttributeText(hass, item.entity, item.attribute)
     : entityStateText(hass, item.entity);
+}
+
+/**
+ * What a free text label actually draws (issue #225).
+ *
+ * Unbound it is the words as typed, which is every text on every plan drawn
+ * before this existed. Bound to an entity it is that entity's reading —
+ * formatted the way Home Assistant formats it anywhere else, so a power sensor
+ * reads `1.2 kW` and its display precision is the entity's own setting rather
+ * than something to configure again here.
+ *
+ * With **both**, the words are a prefix: `PV` and a reading of `1.2 kW` draw
+ * `PV 1.2 kW`. One rule rather than a placeholder syntax to learn, and it
+ * covers the two things people write — a bare number, or a number with a word
+ * in front of it saying which number it is.
+ *
+ * A joining space, not the ` · ` a device's label uses between its own
+ * readings: this is one reading with a name, not a list.
+ */
+export function textLabel(
+  hass: RenderHass | undefined,
+  t: Pick<FloorText, "text" | "entity" | "attribute">,
+): string {
+  // `?? ""` rather than `t.text`: an emptied optional text field is stored as
+  // absent, so an unbound label with no words has no `text` at all — and this
+  // returns a string to every caller, always.
+  if (!t.entity) return t.text ?? "";
+  const value = t.attribute
+    ? entityAttributeText(hass, t.entity, t.attribute)
+    : entityStateText(hass, t.entity);
+  return t.text ? `${t.text} ${value}` : value;
 }
 
 /**
@@ -1126,18 +1167,69 @@ export function renderGlowMask(
  * user forgot about — the editor still shows it, dimmed.
  */
 export function itemHiddenWhenInactive(
-  item: { entity?: string; hideWhenInactive?: boolean },
+  item: Partial<FloorItem>, // Fixes strict Pick<> forcing entity in tests
   state: string | undefined,
+  hass?: RenderHass
 ): boolean {
+  // Advanced hiding logic
+  if (item.enableHideByEntity) {
+    const targetEntity = item.hideEntity || item.entity;
+
+    // Read state or specific attribute (fixes ignored hideAttribute)
+    let evalState: string | number | undefined = state;
+    if (targetEntity && hass && hass.states[targetEntity]) {
+      evalState = item.hideAttribute
+        ? hass.states[targetEntity].attributes[item.hideAttribute]
+        : hass.states[targetEntity].state;
+    }
+
+    return checkHideCondition(
+      evalState,
+      item.hideMode,
+      item.hideState,
+      item.hideOperator as "<" | "<=" | "==" | "!=" | ">=" | ">" | undefined,
+      item.hideThreshold,
+      item.hideInvert
+    );
+  }
+
+  // Legacy fallback
   if (!item.hideWhenInactive) return false;
-  // No entity, nothing that can be active — hide, and don't let a stray state
-  // string argue otherwise (entityIsActive would read a bare "on" as active).
+  // No entity, nothing that can be active — hide.
   if (!item.entity) return true;
   return !entityIsActive(item.entity, state);
 }
 
+export function itemBadgeHidden(
+  item: Partial<FloorItem>,
+  state: string | undefined,
+  hass?: RenderHass
+): boolean {
+  if (!item.enableHideBadgeByEntity) return false;
+
+  let evalState: string | number | undefined = state;
+  if (hass) {
+    const evalEntity = item.hideBadgeEntity || item.entity;
+    if (evalEntity && hass.states[evalEntity]) {
+      evalState = item.hideBadgeAttribute && hass.states[evalEntity].attributes
+        ? String(hass.states[evalEntity].attributes[item.hideBadgeAttribute])
+        : hass.states[evalEntity].state;
+    }
+  }
+
+  return checkHideCondition(
+    evalState,
+    item.hideBadgeMode,
+    item.hideBadgeMatch, // Ensure this property is correctly mapped in your types, or use hideBadgeState
+    item.hideBadgeOperator,
+    item.hideBadgeThreshold,
+    item.hideBadgeInvert
+  );
+}
+
 /** Default label font size (px) for an item's name/state line. */
 export const DEFAULT_LABEL_SIZE = 12;
+
 
 /**
  * The label line under an item's badge, or "" for none: the name (issue #61)
@@ -1148,42 +1240,135 @@ export const DEFAULT_LABEL_SIZE = 12;
  */
 export function itemBadgeLabel(
   hass: RenderHass | undefined,
-  item: {
-    entity: string;
-    secondaryEntity?: string;
-    name?: string;
-    kind: ItemKind;
-    showName?: boolean;
-    showState?: boolean;
-    secondaryAttribute?: string;
-    readings?: ItemReading[];
-  },
+  item: Partial<FloorItem>
 ): string {
   const parts: string[] = [];
   if (item.showName) {
-    const friendly = hass?.states[item.entity]?.attributes?.friendly_name as string | undefined;
+    const friendly = item.entity ? hass?.states[item.entity]?.attributes?.friendly_name as string | undefined : undefined;
     const name = item.name || friendly || item.entity;
     if (name) parts.push(name);
   }
-  if (!!item.entity && (item.showState ?? item.kind === "sensor"))
-    parts.push(itemStateText(hass, item));
-  // Every other reading (issue #180), deliberately *not* gated on `showState`:
-  // the case they were asked for is a plug that says on/off through its badge
-  // colour and wants "1.2 kW · 84 · 5 min ago" without the word "on" in front
-  // of it. `showState` is about the device's own state, and these are not it.
-  //
-  // Each is added only if it resolves to something, so the blank row the
-  // editor's "+" creates stays invisible until it is filled in.
-  for (const reading of itemReadings(item)) {
-    // `showState: false` binds the entity without printing it — for a device
-    // whose badge shows that number and has no use for it twice. The reading
-    // keeps its place in the list either way, so the badge's index into it
-    // does not move (see ItemReading.showState).
-    if (reading.showState === false) continue;
-    const text = itemReadingText(hass, item, reading);
-    if (text) parts.push(text);
+
+  // Check hide condition for the state label
+  let hideStateText = false;
+  if (item.enableHideStateByEntity && hass) {
+    const evalEntity = item.hideStateEntity || item.entity;
+    let evalValue: string | number | undefined;
+
+    if (evalEntity && hass.states[evalEntity]) {
+      evalValue = item.hideStateAttribute && hass.states[evalEntity].attributes
+        ? hass.states[evalEntity].attributes[item.hideStateAttribute]
+        : hass.states[evalEntity].state;
+    }
+
+    hideStateText = checkHideCondition(
+      evalValue,
+      item.hideStateMode,
+      item.hideStateMatch,
+      item.hideStateOperator,
+      item.hideStateThreshold,
+      item.hideStateInvert
+    );
   }
+
+  // Add primary state only if showState is active and condition is NOT met
+  if (!!item.entity && (item.showState ?? item.kind === "sensor") && !hideStateText) {
+    // Assuming itemStateText accepts Partial<FloorItem> or is cast correctly
+    parts.push(itemStateText(hass, item as FloorItem));
+  }
+
+  // Add additional readings ONLY if the hide condition does NOT apply
+  if (!hideStateText) {
+    for (const reading of itemReadings(item as FloorItem)) {
+      if (reading.showState === false) continue;
+
+      const text = itemReadingText(hass, item as FloorItem, reading);
+      if (text) parts.push(text);
+    }
+  }
+
   return parts.join(" · ");
+}
+
+/**
+ * States that mean "the sensor did not answer" rather than a value. A hide
+ * rule has to treat these differently from a real reading — see
+ * `checkHideCondition`.
+ */
+const HIDE_OUTAGE_STATES = new Set(["unavailable", "unknown"]);
+
+/**
+ * Whether a hide condition — threshold or state match — is currently met.
+ * Shared by the whole-item, badge and state-text variants so a fix lands once
+ * instead of three times.
+ *
+ * The rule everywhere here is that an *unevaluable* condition never hides. A
+ * device disappearing is the one outcome a user cannot debug from the plan:
+ * there is nothing left on screen to point at. So a missing value, a missing
+ * threshold, an operator the editor never offered, or a sensor that dropped
+ * out all leave the device visible — and `invert` does not get to flip that,
+ * because it is not a "no" to be negated, it is the absence of an answer.
+ *
+ * The one exception is an outage the user *named*. "Hide the badge while the
+ * sensor is unavailable" is a real rule people write, so a `stateMatch` of
+ * `unavailable`/`unknown` is honoured. Only an unnamed outage is ignored,
+ * which keeps "hide unless the sensor says X" from quietly deleting the
+ * device the day that sensor is renamed.
+ */
+export function checkHideCondition(
+  evalState: string | number | undefined,
+  mode: string = "state",
+  stateMatch: string | undefined,
+  operator: string = "==",
+  threshold: number | undefined,
+  invert: boolean = false
+): boolean {
+  // `== null` on purpose: an attribute read straight off hass can be null as
+  // easily as undefined, and neither is something to compare against.
+  if (evalState == null || evalState === "") return false;
+
+  let isMet = false;
+
+  if (mode === "threshold") {
+    // No threshold, no rule — fail to nothing rather than fall through to
+    // state matching, which would compare against something unrelated.
+    if (threshold === undefined || threshold === null) return false;
+    // Number() covers the outage states too: they are not numbers, so a
+    // threshold rule on a dead sensor simply does not fire.
+    const numericState = Number(evalState);
+    if (!Number.isFinite(numericState)) return false;
+
+    switch (operator) {
+      case "<": isMet = numericState < threshold; break;
+      case "<=": isMet = numericState <= threshold; break;
+      case "==": isMet = numericState === threshold; break;
+      case "!=": isMet = numericState !== threshold; break;
+      case ">=": isMet = numericState >= threshold; break;
+      case ">": isMet = numericState > threshold; break;
+      // Not an operator the editor offers. Guessing one would hide devices
+      // for a reason the config does not state.
+      default: return false;
+    }
+  } else {
+    // State mode. Nothing to match against is nothing to act on — without
+    // this, flipping the operator to "!=" before typing a match hides the
+    // device, since every state differs from "".
+    if (stateMatch == null || String(stateMatch).trim() === "") return false;
+
+    // Same normalisation as matchStateRule (trim, then lowercase), so a hide
+    // rule and a colour rule agree about a state with stray whitespace.
+    const strState = String(evalState).trim().toLowerCase();
+    const strMatch = String(stateMatch).trim().toLowerCase();
+
+    // An outage counts only when it is what the user asked for.
+    if (HIDE_OUTAGE_STATES.has(strState) && !HIDE_OUTAGE_STATES.has(strMatch)) {
+      return false;
+    }
+
+    isMet = operator === "!=" ? strState !== strMatch : strState === strMatch;
+  }
+
+  return invert ? !isMet : isMet;
 }
 
 /**
@@ -1418,6 +1603,58 @@ const DOMAIN_STATE_ICONS: Record<string, { on: string; off: string }> = {
 };
 
 /**
+ * Two media_player states differ from its plain on/off pair above (issue
+ * #206 follow-up): "paused" is on but not mid-playback, and "idle" is on
+ * with nothing loaded at all. mdi:television-play used to claim both, which
+ * reads as "playing" for a device doing neither.
+ */
+const MEDIA_PLAYER_STATE_ICONS: Record<string, string> = {
+  paused: "mdi:television-pause",
+  idle: "mdi:television",
+};
+
+/**
+ * A climate entity's icon per HVAC mode (issue #206) — its state carries the
+ * mode directly, unlike the on/off domains {@link DOMAIN_STATE_ICONS} covers,
+ * so a single on/off pair cannot say "cool" from "heat". Every mode HA's own
+ * climate.HVACMode enum defines.
+ */
+const CLIMATE_MODE_ICONS: Record<string, string> = {
+  off: "mdi:power",
+  heat: "mdi:fire",
+  cool: "mdi:snowflake",
+  heat_cool: "mdi:sun-snowflake-variant",
+  auto: "mdi:thermostat-auto",
+  dry: "mdi:water-percent",
+  fan_only: "mdi:fan",
+};
+
+/**
+ * A weather entity's icon per condition (issue #206) — again a state that
+ * carries more than on/off, and one this card had no mapping for at all: a
+ * weather item drew the bare `defaultIcon` fallback (a plain circle)
+ * whatever the sky was doing. Every condition HA's own weather integrations
+ * report (`ATTR_CONDITION_*`).
+ */
+const WEATHER_CONDITION_ICONS: Record<string, string> = {
+  "clear-night": "mdi:weather-night",
+  cloudy: "mdi:weather-cloudy",
+  exceptional: "mdi:alert-circle-outline",
+  fog: "mdi:weather-fog",
+  hail: "mdi:weather-hail",
+  lightning: "mdi:weather-lightning",
+  "lightning-rainy": "mdi:weather-lightning-rainy",
+  partlycloudy: "mdi:weather-partly-cloudy",
+  pouring: "mdi:weather-pouring",
+  rainy: "mdi:weather-rainy",
+  snowy: "mdi:weather-snowy",
+  "snowy-rainy": "mdi:weather-snowy-rainy",
+  sunny: "mdi:weather-sunny",
+  windy: "mdi:weather-windy",
+  "windy-variant": "mdi:weather-windy-variant",
+};
+
+/**
  * State-aware icons per `binary_sensor` device class ("show as" in the HA UI),
  * mirroring Home Assistant's own device-class icon set. `on` is the
  * device-class's active state (open / detected / unlocked / …).
@@ -1499,6 +1736,18 @@ const ACTIVE_STATES: Record<string, ReadonlySet<string>> = {
   lock: new Set(["unlocked", "unlocking", "open", "opening"]),
   vacuum: new Set(["cleaning", "returning"]),
   camera: new Set(["recording", "streaming"]),
+  // A climate entity's state *is* its HVAC mode (issue #206) — "cool",
+  // "heat", "dry"… never the generic "on" the fallback test looks for, so
+  // every mode but the literal "off" read as off forever: the active
+  // highlight never lit, and a configured iconAnimation never played on a
+  // unit that was very much running. Every mode HA's own climate.HVACMode
+  // enum defines, off excluded.
+  climate: new Set(["auto", "cool", "dry", "fan_only", "heat", "heat_cool"]),
+  // Same trap, one domain over: a paused or idle player is still switched
+  // on, just not mid-playback, and "playing" alone left everything else
+  // reading as off. "standby" is the one state that means the device itself
+  // dropped to low power, so it stays out.
+  media_player: new Set(["on", "idle", "playing", "paused", "buffering"]),
 };
 
 /**
@@ -1545,6 +1794,13 @@ export function domainIconAnimation(entity: string | undefined): "spin" | "pulse
  * unavailable) entity — including when the config forces "spin"/"pulse": a
  * spinning fan icon is a claim that the fan is running, so it obeys the same
  * fail-closed rule as the active highlight ({@link entityIsActive}).
+ *
+ * A climate entity in `fan_only` spins regardless of `iconAnimation`
+ * (issue #206 follow-up) — its own fan is what's actually running, the same
+ * physical fact that makes a `fan` domain entity spin by default, just
+ * decided from this entity's *state* rather than its domain. `none` still
+ * wins over it: that is a decision to show no animation at all, not a
+ * preference between spin and pulse for this one to override.
  */
 export function resolveIconAnimation(
   item: { entity?: string; iconAnimation?: IconAnimation },
@@ -1553,6 +1809,7 @@ export function resolveIconAnimation(
   const mode = item.iconAnimation ?? "auto";
   if (mode === "none") return undefined;
   if (!entityIsActive(item.entity, state)) return undefined;
+  if (item.entity?.split(".")[0] === "climate" && state === "fan_only") return "spin";
   if (mode === "spin" || mode === "pulse") return mode;
   return domainIconAnimation(item.entity);
 }
@@ -1600,8 +1857,28 @@ export function entityDefaultIcon(
   entityId: string,
   deviceClass: string | undefined,
   on: boolean,
+  state?: string,
 ): string | undefined {
   const domain = entityId.split(".")[0];
+  // Climate and weather carry more than on/off in their state (issue #206):
+  // a climate's state is its HVAC mode, and a weather entity's is its
+  // condition, so a single on/off pair — even a correct one — can only ever
+  // say two things about a domain with five or fifteen. Checked ahead of
+  // the plain on/off table below, and falling back to it (or, for weather,
+  // to state === undefined too) covers a state this card doesn't recognise
+  // rather than drawing nothing.
+  if (domain === "climate")
+    return CLIMATE_MODE_ICONS[state ?? ""] ?? (on ? "mdi:thermostat" : "mdi:power");
+  if (domain === "weather") return WEATHER_CONDITION_ICONS[state ?? ""] ?? "mdi:weather-cloudy";
+  // paused and idle are both "on" by entityIsActive's own rule (issue #206
+  // follow-up) — correctly so — but the play glyph the on/off pair below
+  // would give both reads as "playing" for a device doing neither. Checked
+  // ahead of that pair; every other active state (playing, buffering, the
+  // literal "on") still falls through to it.
+  if (domain === "media_player" && state) {
+    const stateIcon = MEDIA_PLAYER_STATE_ICONS[state];
+    if (stateIcon) return stateIcon;
+  }
   // These domains carry their meaning in the domain, not a device class, so the
   // device-class guard below would skip them entirely.
   const byDomain = DOMAIN_STATE_ICONS[domain];
@@ -1681,6 +1958,7 @@ export function resolveItemIcon(
       item.entity,
       st?.attributes?.device_class as string | undefined,
       entityIsActive(item.entity, st?.state),
+      st?.state,
     ) ?? defaultIcon(item.kind)
   );
 }
@@ -2097,9 +2375,16 @@ export function openingMotion(o: Opening): "swing" | "slide" | "roll" {
  * openings are drawn closed (intact glass / panels filling the gap). This
  * preserves the look of a static floor plan — a slider drawn open would read as
  * a hole rather than a door.
+ *
+ * `invert` flips this picture same as it flips a bound entity's reading
+ * ({@link resolveOpeningOpen}) — an unbound opening has no sensor to invert,
+ * but the intent is the same either way: "the opposite of what this would
+ * otherwise draw." A swing door marked `invert: true` and left unbound draws
+ * shut; an unbound window marked the same way draws open.
  */
 export function openingDefaultOpen(o: Opening): boolean {
-  return o.type === "door" && openingMotion(o) === "swing";
+  const natural = o.type === "door" && openingMotion(o) === "swing";
+  return o.invert ? !natural : natural;
 }
 
 /**

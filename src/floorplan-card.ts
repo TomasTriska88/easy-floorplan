@@ -80,6 +80,7 @@ import {
   trackerSensorReading,
   entityIsActive,
   itemBadgeLabel,
+  textLabel,
   resolveStateColor,
   itemRawValue,
   badgeContentOf,
@@ -90,6 +91,7 @@ import {
   offlineStyleOf,
   itemIsOffline,
   itemHiddenWhenInactive,
+  itemBadgeHidden,
   itemLabelSize,
   areaLabelFontSize,
   wallStrokeStyle,
@@ -602,8 +604,12 @@ export class FloorplanCard extends LitElement {
     // arrive every device would answer "offline" and the plan would flash
     // grey on load.
     const offline = !!this.hass && itemIsOffline(item, st?.state);
+
+    // Hide badge by state or operator (preserve layout space via CSS visibility)
+    const isBadgeHidden = itemBadgeHidden(item, st?.state, this.hass);
     // "none" is the old `showIcon: false` — no badge, label only (issue #106).
     const showIcon = badgeContentOf(item) !== "none";
+
     const display = item.display ?? "badge";
     // Per-device active color (issue #79). Ripples follow it too, so a device
     // given one color does not come out yellow-badged with a blue ring.
@@ -623,16 +629,23 @@ export class FloorplanCard extends LitElement {
     const badgeInk = contrastText(stateColor ?? activeColor);
     const rippleSize = item.rippleSize ?? DEFAULT_RIPPLE_SIZE;
 
+    // Apply visibility hidden to keep the layout space intact for the label
+    const hiddenStyle = isBadgeHidden ? "visibility: hidden; pointer-events: none;" : "";
+
     let visual: TemplateResult | typeof nothing = nothing;
     if (display === "ripple") {
-      visual = renderRipple(on, rippleColor, rippleSize, 3, scale);
+      visual = html`<span style="${hiddenStyle}">
+        ${renderRipple(on, rippleColor, rippleSize, 3, scale)}
+      </span>`;
     } else if (display === "iconRipple") {
-      visual = html`<div class="stack">
+      visual = html`<div class="stack" style="${hiddenStyle}">
         ${renderRipple(on, rippleColor, rippleSize, 3, scale)}
         ${showIcon ? html`<div class="stack-icon">${this._renderBadge(item, scale)}</div>` : nothing}
       </div>`;
     } else if (showIcon) {
-      visual = this._renderBadge(item, scale);
+      visual = html`<span style="${hiddenStyle}">
+        ${this._renderBadge(item, scale)}
+      </span>`;
     }
 
     // Rotated frame: the overlay is HTML, so each anchor is remapped instead
@@ -736,7 +749,7 @@ export class FloorplanCard extends LitElement {
                color:${cssColorOr(t.color, SKIN_TEXT)};
                transform:translate(-50%,-50%) scale(var(--fp-inv-zoom,1)) rotate(${cssNumber(t.angle, 0)}deg);"
       >
-        ${t.text}
+        ${textLabel(this.hass, t)}
       </div>
     `;
   }
@@ -1322,8 +1335,37 @@ export class FloorplanCard extends LitElement {
     .plan.scale-plan {
       container-type: inline-size;
     }
+    /*
+     * The unit itself, declared twice on purpose.
+     *
+     * The fallback in var(--fp-u, 1px) is not the safety net it looks like: it
+     * fires when the property is *unset*, never when its value fails to
+     * resolve. A browser with no container queries parses the calc quite
+     * happily -- a custom property takes almost any token stream -- and then
+     * every property using it is invalid at computed-value time, so each falls
+     * back to its own initial value. Width becomes auto, and a badge collapses
+     * to its borders: about 3px, with its label landing on top of it because
+     * the item's box collapsed with it.
+     *
+     * So the plain value is declared first, and the container-query one only
+     * where it can actually be computed. One pixel per canvas unit is exactly
+     * what overlayScale fixed draws, which is the right thing to degrade to: a
+     * plan that looks like it did before canvas units existed, rather than one
+     * with 3px badges.
+     *
+     * The guard tests the unit as well as the property, because they are two
+     * features and only one of them is what the declaration is made of. A
+     * browser with container-type but no cqw would pass a check for the
+     * property and then fail on the value, which is the exact collapse this is
+     * here to stop. Test what is actually used; it costs one more clause.
+     */
     .plan.scale-plan .items {
-      --fp-u: calc(100cqw / var(--fp-plan-w));
+      --fp-u: 1px;
+    }
+    @supports (container-type: inline-size) and (width: 1cqw) {
+      .plan.scale-plan .items {
+        --fp-u: calc(100cqw / var(--fp-plan-w));
+      }
     }
     /* The measures that aren't config-driven, so they never reach an inline
        style. Label padding goes to em rather than canvas units because it

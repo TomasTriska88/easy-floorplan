@@ -38,6 +38,7 @@ screen size.
   - (${\color{red}NEW!}$) **A sensor per leaf** — anything with two leaves takes a second contact and draws them independently: a casement window with one sash open and one shut, a double door ajar on one side, a pair of shutters with one folded back.
 - (${\color{red}NEW!}$) **Offline devices read as offline** — an entity that is unavailable, unknown, or gone from Home Assistant is dimmed (or crossed out), instead of looking exactly like a device someone switched off.
 - (${\color{red}NEW!}$) **Furniture** — 26 gray line-art diagrams (table, sofa, bed, stove, stairs, tv…), each bindable to an entity, in a searchable picker. Every one is a plain JSON file of numbers you can copy: draw your own in the editor's paste box, use it straight away, and open a PR when it's good. No SVG, so nothing you paste can run anything.
+- (${\color{red}NEW!}$) **Live text labels** — bind a text to an entity and it shows the reading: a power figure in the corner, a temperature over a room. Type words in front of it, or leave them out for the number alone.
 - **Areas** — trace room polygons that color live from an entity, and link them to Home Assistant areas to scope entity pickers and bulk-add devices.
 - **Live position trackers** — map one or two distance sensors (mmWave / radar) onto a marker that moves across the plan in real time.
 - (${\color{red}NEW!}$) **Dead spaces** — hatch the spaces your walls seal off that no door or window reaches: a service shaft, the void behind a boxed-in stairwell. Nothing to draw — the regions come from the walls and openings themselves, so cutting a doorway into one stops it being dead the moment you place the door.
@@ -556,8 +557,27 @@ without turning into the color of the light. Pools never intercept clicks.
 
 ### Text
 
-`{ id, x, y, text, size?, color?, angle? }` — `size` px (default 16), `color` CSS/hex,
-`angle` degrees.
+`{ id, x, y, text, entity?, attribute?, size?, color?, angle? }` — `size` px (default 16),
+`color` CSS/hex, `angle` degrees.
+
+Bind an **`entity`** and the label shows its current value (issue #225) — a power reading
+in the corner of the plan, a temperature over a room:
+
+```yaml
+texts:
+  # The reading on its own.
+  - { id: pv, x: 300, y: 80, text: "", entity: sensor.pv_output, size: 28 }
+  # Words in front of it: "Grid 0.4 kW".
+  - { id: grid, x: 300, y: 130, text: Grid, entity: sensor.grid_power }
+  # An attribute rather than the state: "Hall 21.5".
+  - { id: hall, x: 300, y: 180, text: Hall, entity: climate.hall, attribute: current_temperature }
+```
+
+`text` becomes a **prefix** when an entity is bound, and the value stands alone when you
+leave it empty. Values are formatted the way Home Assistant formats them anywhere else,
+units and display precision included — so rounding a reading is that entity's own
+**display precision** setting rather than anything to configure here. An entity that isn't
+there reads `—`, the same as a device's label.
 
 ### Furniture
 
@@ -1094,6 +1114,13 @@ apart when the card resizes" — though the better answer is often to have no cl
 all: put the readings on **one** device with [`readings`](#more-readings-per-device) and
 there is no relative position left to preserve.)
 
+> **"It looks right on my computer and wrong on my phone."** Same plan, same config —
+> a phone just gives the card less width. Under `fixed` the badges stay 34px and the text
+> stays 12px while everything they were spaced against halves, so a badge ends up sitting
+> on the label or the free text beside it, and it reads as a label that has moved. Nothing
+> has moved: the gaps shrank and the badges did not. `overlayScale: plan` is the answer —
+> it is what a plan drawn once and shown at two sizes wants. (Issue #217.)
+
 Reach for `fixed` when the card renders **larger** than its canvas, or on a wall tablet
 where a px floor under the text is what keeps it readable from across the room.
 
@@ -1384,6 +1411,45 @@ devices**.
 The mark's colour is `--fp-offline-mark`, falling back to the theme's `--error-color`, so
 card-mod can recolour it without touching anything else. A device drawn as a bare ripple,
 or as a label with no badge, has nothing to cross out and takes the fade alone.
+
+## Advanced Hiding Logic
+
+You can fine-tune when an item, its badge, or its state label is hidden. Instead of just hiding an element when its main entity is inactive, you can evaluate specific states, numeric thresholds, or even watch entirely different entities. 
+
+This is available for the **whole item** (`hide...`), the **badge** (`hideBadge...`), and the **state text** (`hideState...`). 
+
+| YAML Key | Type | Description |
+| :--- | :--- | :--- |
+| `enableHideByEntity` | `boolean` | Activates the advanced hide logic for the whole item. (Use `enableHideBadgeByEntity` / `enableHideStateByEntity` for specific parts). |
+| `hideEntity` | `string` | The entity to evaluate. If omitted, the device's main `entity` is used. |
+| `hideAttribute` | `string` | Evaluate a specific attribute (e.g., `current_temperature`) instead of the state. |
+| `hideMode` | `string` | Set to `"state"` for text matching, or `"threshold"` for numeric comparisons. |
+| `hideState` | `string` | The exact string to match (case-insensitive) when using `hideMode: "state"`. |
+| `hideOperator` | `string` | The comparison operator (`<`, `<=`, `==`, `!=`, `>=`, `>`) used for thresholds or state matching. |
+| `hideThreshold` | `number` | The numeric value to compare against when using `hideMode: "threshold"`. |
+| `hideInvert` | `boolean` | If `true`, inverts the final result of the condition. |
+
+The badge and state-text variants take the same eight keys with a `hideBadge` /
+`hideState` prefix — `enableHideBadgeByEntity`, `hideBadgeEntity`, `hideBadgeAttribute`,
+`hideBadgeMode`, `hideBadgeMatch`, `hideBadgeOperator`, `hideBadgeThreshold`,
+`hideBadgeInvert`, and likewise for `hideState...`. (The whole-item key is `hideState`;
+the state-text one is `hideStateMatch`.)
+
+**Example:** Hide a badge if the temperature of another sensor drops below 20:
+```yaml
+enableHideBadgeByEntity: true
+hideBadgeEntity: sensor.room_temperature
+hideBadgeMode: threshold
+hideBadgeOperator: "<"
+hideBadgeThreshold: 20
+```
+
+**When the sensor doesn't answer.** A condition that can't be evaluated never hides —
+a device that vanishes is the one thing you can't debug from the plan. A missing value,
+a missing threshold, or a sensor gone `unavailable` under a numeric threshold all leave
+the item on screen, and `hideInvert` doesn't flip that. The exception is an outage you
+asked for by name: `hideMode: state` with `hideState: unavailable` does hide, so
+"hide the badge while this sensor is dead" works as written.
 
 ## Compact header
 

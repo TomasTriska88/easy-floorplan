@@ -29,7 +29,7 @@ import {
 } from "./editor-forms";
 import { itemHasLabel } from "./render";
 import type { FormField } from "./editor-forms";
-import type { Area, Opening, FloorItem, Floor, Furniture, Tracker, FloorplanCardConfig } from "./types";
+import type { Area, FloorText, Opening, FloorItem, Floor, Furniture, Tracker, FloorplanCardConfig } from "./types";
 import { DEFAULT_GLOW_RADIUS, DEFAULT_PRESS_EFFECT } from "./types";
 import { DEFAULT_SKIN, SKINS, MAX_SKIN_WALL_WIDTH } from "./skins";
 import { DEFAULT_SUN_BEARING, SUN_REACH } from "./render";
@@ -158,10 +158,16 @@ describe("openingForm", () => {
     });
   });
 
-  it("invert only offered with an entity; the picker takes contacts, covers and locks", () => {
-    expect(openingForm(door).fields.map((x) => x.name)).not.toContain("invert");
+  it("invert is offered whether or not an entity is bound; the picker takes contacts, covers and locks", () => {
+    // Unbound, invert flips the type default (openingDefaultOpen) instead of
+    // a sensor reading — still worth offering, so it carries its own helper
+    // explaining what it does with nothing bound.
+    const unbound = openingForm(door).fields.find((x) => x.name === "invert")!;
+    expect(unbound).toBeDefined();
+    expect(unbound.helper).toContain("No sensor bound");
     const bound = openingForm({ ...door, entity: "cover.x" } as Opening);
     expect(bound.fields.map((x) => x.name)).toContain("invert");
+    expect(bound.fields.find((x) => x.name === "invert")!.helper).toBeUndefined();
     const entity = bound.fields.find((x) => x.name === "entity")!;
     // `lock` joined with issue #176 — a door with a smart lock and no contact.
     expect(entity.selector).toEqual({
@@ -876,9 +882,15 @@ describe("areaForm", () => {
 });
 
 describe("textForm / furnitureForm / trackerForm", () => {
-  it("text field is required (empty stays empty, not undefined)", () => {
-    const form = textForm({ id: "t", x: 0, y: 0, text: "hi" });
-    expect(form.fields.find((x) => x.name === "text")!.required).toBe(true);
+  it("text is required while nothing else fills the label (issue #225)", () => {
+    const req = (t: Partial<FloorText>) =>
+      textForm({ id: "t", x: 0, y: 0, text: "hi", ...t } as FloorText).fields.find(
+        (x) => x.name === "text"
+      )!.required;
+    // No entity: words are the only thing that can be on screen.
+    expect(req({})).toBe(true);
+    // A bound reading fills it, so the words become an optional prefix.
+    expect(req({ entity: "sensor.pv" })).toBe(false);
   });
 
   it("furniture type options carry human labels", () => {
