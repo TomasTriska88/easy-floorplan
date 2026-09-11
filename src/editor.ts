@@ -159,6 +159,7 @@ import {
   layoutPointsInPolygon,
   nearestAreaSnapPoint,
   nearestCorner,
+  rectAreaPoints,
   snapWallEnd,
   type AttachedCorner,
   type OrigPos,
@@ -208,7 +209,7 @@ import {
 const formLabel = (s: FormField): string => s.label;
 const formHelper = (s: FormField): string | undefined => s.helper;
 
-type Tool = "select" | "wall" | "door" | "window" | "tracker" | "area";
+type Tool = "select" | "wall" | "door" | "window" | "tracker" | "area" | "area-rectangle";
 type OverlaySel = { kind: "item" | "text"; id: string };
 
 /** Toolbar metadata per tool: mdi icon + label (icons make the modes scannable). */
@@ -219,6 +220,7 @@ const TOOL_META: Record<Tool, { icon: string; label: string }> = {
   window: { icon: "mdi:window-closed-variant", label: "Window" },
   tracker: { icon: "mdi:crosshairs-gps", label: "Tracker" },
   area: { icon: "mdi:vector-polygon", label: "Area" },
+  "area-rectangle": { icon: "mdi:rectangle-outline", label: "Rectangle" },
 };
 
 /**
@@ -1381,6 +1383,14 @@ export class FloorplanCardEditor extends LitElement {
       }
       return;
     }
+    if (this._tool === "area-rectangle") {
+      const pt = this._snapAreaPoint(raw.x, raw.y);
+      this._areaDragStart = { x: pt.x, y: pt.y };
+      this._draftArea = { points: rectAreaPoints({ x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y }) };
+      this._gesturePointer = ev.pointerId;
+      this._capturePointer(ev);
+      return;
+    }
     // Select tool, empty canvas: start a marquee (rubber-band) selection.
     // Clicking empty space also ends any cycling run (issue #52).
     this._pickAnchor = null;
@@ -1472,6 +1482,22 @@ export class FloorplanCardEditor extends LitElement {
       this._areaHover = this._snapAreaPoint(raw.x, raw.y);
       return;
     }
+    if (this._tool === "area-rectangle" && this._draftArea) {
+      const raw = this._toVirtual(ev, false);
+      const start = this._areaDragStart;
+      if (start) {
+        this._draftArea = {
+          points: rectAreaPoints({
+            x0: start.x,
+            y0: start.y,
+            x1: this._snap(raw.x),
+            y1: this._snap(raw.y),
+          }),
+        };
+      }
+      this._areaHover = null;
+      return;
+    }
     if (this._marquee) {
       const raw = this._toVirtual(ev, false);
       this._marquee = { ...this._marquee, x1: raw.x, y1: raw.y };
@@ -1509,6 +1535,23 @@ export class FloorplanCardEditor extends LitElement {
       if (w >= this.grid / 2 && h >= this.grid / 2) {
         this._addTracker(x, y, w, h);
       }
+      return;
+    }
+    if (this._tool === "area-rectangle" && this._draftArea) {
+      const d = this._draftArea;
+      const width = Math.abs(d.points[1]!.x - d.points[0]!.x);
+      const height = Math.abs(d.points[3]!.y - d.points[0]!.y);
+      if (width > 0 && height > 0) {
+        const rect: Area = { id: uid("area"), points: d.points, showName: true };
+        this._commitFloor({ areas: [...(this._floor().areas ?? []), rect] });
+        this._selection = [{ kind: "area", id: rect.id }];
+      }
+      this._draftArea = null;
+      this._areaHover = null;
+      this._areaDragStart = null;
+      this._gesturePointer = null;
+      this._releasePointer(ev);
+      this._tool = "select";
       return;
     }
     if (this._marquee) {
@@ -3097,6 +3140,11 @@ export class FloorplanCardEditor extends LitElement {
               : `${n} points placed — click the first point to close the room, or keep adding.`}
         </span>
       `;
+    } else if (t === "area-rectangle") {
+      label = "Rectangle";
+      body = html`
+        <span class="ctx-hint">Drag to draw a snapped room rectangle.</span>
+      `;
     } else if (t === "door" || t === "window") {
       label = t === "door" ? "Door" : "Window";
       // Length input here so the user can size openings BEFORE placing them
@@ -3280,7 +3328,7 @@ export class FloorplanCardEditor extends LitElement {
         <div class="toolbar">
           <!-- Tools — modes; exactly one is active at a time -->
           <div class="seg" role="group" aria-label="Tool">
-            ${(["select", "wall", "door", "window", "tracker", "area"] as Tool[]).map(
+            ${(["select", "wall", "door", "window", "tracker", "area", "area-rectangle"] as Tool[]).map(
               (t) => html`
                 <button
                   class=${this._tool === t ? "active" : ""}
@@ -3292,6 +3340,7 @@ export class FloorplanCardEditor extends LitElement {
                     this._draftTracker = null;
                     this._draftArea = null;
                     this._areaHover = null;
+                    this._areaDragStart = null;
                   }}
                 >
                   <ha-icon icon=${TOOL_META[t].icon}></ha-icon>${TOOL_META[t].label}
@@ -6277,7 +6326,8 @@ export class FloorplanCardEditor extends LitElement {
     svg.door,
     svg.window,
     svg.tracker,
-    svg.area {
+    svg.area,
+    svg.area-rectangle {
       cursor: crosshair;
     }
     .grid {

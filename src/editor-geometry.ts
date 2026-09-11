@@ -23,6 +23,72 @@ export interface Rect {
   y1: number;
 }
 
+/**
+ * Convert a pair of opposite corners into a normalized axis-aligned room polygon.
+ * Used as the geometric primitive for drag-to-draw rectangle rooms and room
+ * resizing, before the editor applies any room-specific snap or attach rules.
+ */
+export function rectAreaPoints(rect: Rect): AreaPoint[] {
+  const minX = Math.min(rect.x0, rect.x1);
+  const maxX = Math.max(rect.x0, rect.x1);
+  const minY = Math.min(rect.y0, rect.y1);
+  const maxY = Math.max(rect.y0, rect.y1);
+  return [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+}
+
+/** Resize a rectangle area by moving one corner and keeping the opposite corner fixed. */
+export function rectAreaVertexResize(points: readonly AreaPoint[], vertexIndex: number, target: AreaPoint): AreaPoint[] {
+  const current = points.map((p) => ({ ...p }));
+  const fixed = [0, 1, 2, 3].find((i) => i !== vertexIndex && i !== (vertexIndex + 2) % 4) ?? 0;
+  const anchor = current[fixed]!;
+  const moved = { ...target };
+  const out = current.map((p, i) => {
+    if (i === vertexIndex) return moved;
+    if (i === (vertexIndex + 2) % 4) return anchor;
+    if (i === 0 && fixed === 0) return anchor;
+    return p;
+  });
+
+  const minX = Math.min(...out.map((p) => p.x));
+  const maxX = Math.max(...out.map((p) => p.x));
+  const minY = Math.min(...out.map((p) => p.y));
+  const maxY = Math.max(...out.map((p) => p.y));
+  return [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+}
+
+/** Resize a rectangle area by moving one edge and keeping the opposite edge fixed. */
+export function rectAreaEdgeResize(points: readonly AreaPoint[], edgeIndex: number, target: AreaPoint): AreaPoint[] {
+  const current = points.map((p) => ({ ...p }));
+  const opposite = (edgeIndex + 2) % 4;
+  const fixed = current[opposite]!;
+  const moved = { ...target };
+  const next = current.map((p, i) => {
+    if (i === edgeIndex) return moved;
+    if (i === opposite) return fixed;
+    return p;
+  });
+  const minX = Math.min(...next.map((p) => p.x));
+  const maxX = Math.max(...next.map((p) => p.x));
+  const minY = Math.min(...next.map((p) => p.y));
+  const maxY = Math.max(...next.map((p) => p.y));
+  return [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+}
+
 type WallSegment = Pick<Wall, "x1" | "y1" | "x2" | "y2">;
 
 /** Snap distance (virtual units) for wall endpoints onto each other. */

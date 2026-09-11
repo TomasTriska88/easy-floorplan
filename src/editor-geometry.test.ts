@@ -13,6 +13,9 @@ import {
   isLocked,
   movableSelection,
   cyclePick,
+  rectAreaPoints,
+  rectAreaVertexResize,
+  rectAreaEdgeResize,
 } from "./editor-geometry";
 import type { OrigPos } from "./editor-geometry";
 import type { Area, Floor, RenderHass, Wall } from "./types";
@@ -314,6 +317,59 @@ describe("areaContainingPoint", () => {
   it("overlapping areas: last-drawn (array order) wins", () => {
     expect(areaContainingPoint({ areas: [a1, a2] }, 7, 7)?.id).toBe("a2");
     expect(areaContainingPoint({ areas: [a2, a1] }, 7, 7)?.id).toBe("a1");
+  });
+});
+
+describe("rectAreaPoints", () => {
+  it("creates a closed rectangle from opposite corners in clockwise order", () => {
+    expect(rectAreaPoints({ x0: 10, y0: 20, x1: 40, y1: 60 })).toEqual([
+      { x: 10, y: 20 },
+      { x: 40, y: 20 },
+      { x: 40, y: 60 },
+      { x: 10, y: 60 },
+    ]);
+  });
+
+  it("normalizes inverted corners and preserves the rectangle area", () => {
+    expect(rectAreaPoints({ x0: 80, y0: 30, x1: 20, y1: 70 })).toEqual([
+      { x: 20, y: 30 },
+      { x: 80, y: 30 },
+      { x: 80, y: 70 },
+      { x: 20, y: 70 },
+    ]);
+  });
+
+  it("normalizes a drag that starts in the lower-right and ends in the upper-left", () => {
+    expect(rectAreaPoints({ x0: 35, y0: 80, x1: 5, y1: 20 })).toEqual([
+      { x: 5, y: 20 },
+      { x: 35, y: 20 },
+      { x: 35, y: 80 },
+      { x: 5, y: 80 },
+    ]);
+  });
+});
+
+describe("rectAreaVertexResize", () => {
+  it("keeps the opposite corner fixed while dragging a room corner", () => {
+    const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    expect(rectAreaVertexResize(pts, 2, { x: 25, y: 25 })).toEqual([
+      { x: 0, y: 0 },
+      { x: 25, y: 0 },
+      { x: 25, y: 25 },
+      { x: 0, y: 25 },
+    ]);
+  });
+});
+
+describe("rectAreaEdgeResize", () => {
+  it("moves one wall while the opposite wall stays fixed", () => {
+    const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    expect(rectAreaEdgeResize(pts, 2, { x: 10, y: 20 })).toEqual([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 20 },
+      { x: 0, y: 20 },
+    ]);
   });
 });
 
