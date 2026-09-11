@@ -69,12 +69,13 @@ export function rectAreaVertexResize(points: readonly AreaPoint[], vertexIndex: 
 /** Resize a rectangle area by moving one edge and keeping the opposite edge fixed. */
 export function rectAreaEdgeResize(points: readonly AreaPoint[], edgeIndex: number, target: AreaPoint): AreaPoint[] {
   const current = points.map((p) => ({ ...p }));
-  const opposite = (edgeIndex + 2) % 4;
-  const fixed = current[opposite]!;
-  const moved = { ...target };
+  const start = edgeIndex % 4;
+  const end = (edgeIndex + 1) % 4;
+  const isHorizontal = Math.abs(current[start]!.y - current[end]!.y) < 0.001;
   const next = current.map((p, i) => {
-    if (i === edgeIndex) return moved;
-    if (i === opposite) return fixed;
+    if (i === start || i === end) {
+      return isHorizontal ? { ...p, y: target.y } : { ...p, x: target.x };
+    }
     return p;
   });
   const minX = Math.min(...next.map((p) => p.x));

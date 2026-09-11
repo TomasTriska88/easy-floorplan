@@ -371,6 +371,16 @@ describe("rectAreaEdgeResize", () => {
       { x: 0, y: 20 },
     ]);
   });
+
+  it("shrinks the rectangle when a wall is dragged inward", () => {
+    const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    expect(rectAreaEdgeResize(pts, 1, { x: 5, y: 5 })).toEqual([
+      { x: 0, y: 0 },
+      { x: 5, y: 0 },
+      { x: 5, y: 10 },
+      { x: 0, y: 10 },
+    ]);
+  });
 });
 
 describe("nearestAreaSnapPoint", () => {

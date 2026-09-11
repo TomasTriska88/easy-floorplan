@@ -159,6 +159,7 @@ import {
   layoutPointsInPolygon,
   nearestAreaSnapPoint,
   nearestCorner,
+  rectAreaEdgeResize,
   rectAreaPoints,
   snapWallEnd,
   type AttachedCorner,
@@ -267,6 +268,8 @@ interface Drag {
   endpoint?: 1 | 2;
   /** Set when dragging a single Area vertex handle (index into its `points`). */
   areaVertex?: number;
+  /** Set when dragging a single Area edge handle (index into its edges). */
+  areaEdge?: number;
   /**
    * Endpoints of *other* walls that coincide with the dragged wall's
    * corner(s) and stretch along with it (issue #30). Hold Alt to detach and
@@ -1611,14 +1614,20 @@ export class FloorplanCardEditor extends LitElement {
     return cyclePick(candidates, this._selection, sameSpot) ?? sel;
   }
 
-  private _startDrag(ev: PointerEvent, sel: Sel, endpoint?: 1 | 2, areaVertex?: number): void {
+  private _startDrag(
+    ev: PointerEvent,
+    sel: Sel,
+    endpoint?: 1 | 2,
+    areaVertex?: number,
+    areaEdge?: number
+  ): void {
     if (this._tool !== "select") return;
     ev.stopPropagation();
     if (this._gesturePointer !== null) return;
     this._canvasWrap?.focus({ preventScroll: true });
-    // Endpoint/vertex handles always operate on that single element; every
+    // Endpoint/vertex/edge handles always operate on that single element; every
     // other click goes through the overlap-aware picker (issue #52).
-    const explicitHandle = endpoint != null || areaVertex != null;
+    const explicitHandle = endpoint != null || areaVertex != null || areaEdge != null;
     const pick = explicitHandle ? sel : this._resolvePick(ev, sel);
     if (explicitHandle) this._selectOne(pick);
     else this._selectForPointer(ev, pick);
@@ -1637,6 +1646,7 @@ export class FloorplanCardEditor extends LitElement {
       orig: this._snapshotSelection(),
       endpoint,
       areaVertex,
+      areaEdge,
     };
     if (pick.kind === "wall") this._drag.attached = this._attachedCorners(pick.id, endpoint);
     this._gesturePointer = ev.pointerId;
@@ -1743,6 +1753,21 @@ export class FloorplanCardEditor extends LitElement {
       const areas = (f.areas ?? []).map((a) =>
         a.id === drag.primary.id
           ? { ...a, points: a.points.map((pt, i) => (i === idx ? target : pt)) }
+          : a
+      );
+      this._emitFloor({ areas });
+      return;
+    }
+
+    // Single Area edge handle: move one wall of a rectangle while the opposite
+    // wall stays fixed, so the room can be pushed or pulled without moving the
+    // whole shape.
+    if (drag.primary.kind === "area" && drag.areaEdge != null) {
+      const idx = drag.areaEdge;
+      const target = this._snapAreaPoint(p.x, p.y, { areaId: drag.primary.id, vertexIndex: idx });
+      const areas = (f.areas ?? []).map((a) =>
+        a.id === drag.primary.id
+          ? { ...a, points: rectAreaEdgeResize(a.points, idx, target) }
           : a
       );
       this._emitFloor({ areas });
@@ -4437,16 +4462,33 @@ export class FloorplanCardEditor extends LitElement {
                  @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "area", id: a.id })} />
         ${selected ? svg`<polygon points=${pts} class="area-outline" />` : nothing}
         ${
-          // Outline yes, vertex handles no, for a pinned room — same reasoning
-          // as the wall's endpoints (issue #191): still visibly selected, with
-          // nothing on it that pretends to be draggable.
+          // Outline yes, vertex and edge handles no, for a pinned room — same
+          // reasoning as the wall's endpoints (issue #191): still visibly
+          // selected, with nothing on it that pretends to be draggable.
           selected && !a.locked
-            ? a.points.map(
-                (p, i) => svg`
-                  <circle cx=${p.x} cy=${p.y} r="7" class="handle"
+            ? [
+                ...a.points.map(
+                  (p, i) => svg`
+                    <circle cx=${p.x} cy=${p.y} r="7" class="handle"
+                            @pointerdown=${(e: PointerEvent) =>
+                              this._startDrag(e, { kind: "area", id: a.id }, undefined, i)} />`
+                ),
+                ...(a.points.length === 4
+                  ? a.points.map((p, i) => {
+                      const next = a.points[(i + 1) % a.points.length];
+                      const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
+                      const isHorizontal = Math.abs(p.y - next.y) < 0.001;
+                      return svg`
+                        <circle
+                          cx=${mid.x}
+                          cy=${mid.y}
+                          r="5"
+                          class=${isHorizontal ? "handle area-edge-handle ns" : "handle area-edge-handle ew"}
                           @pointerdown=${(e: PointerEvent) =>
-                            this._startDrag(e, { kind: "area", id: a.id }, undefined, i)} />`
-              )
+                            this._startDrag(e, { kind: "area", id: a.id }, undefined, undefined, i)} />`;
+                    })
+                  : []),
+              ]
             : nothing
         }
       </g>`;
@@ -6653,6 +6695,12 @@ export class FloorplanCardEditor extends LitElement {
       stroke: var(--card-background-color, #fff);
       stroke-width: 1.5;
       cursor: grab;
+    }
+    .area-edge-handle.ew {
+      cursor: ew-resize;
+    }
+    .area-edge-handle.ns {
+      cursor: ns-resize;
     }
     .items {
       position: absolute;
