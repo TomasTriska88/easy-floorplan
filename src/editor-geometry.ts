@@ -1,4 +1,12 @@
-import type { Area, AreaPoint, Floor, RenderHass, Wall } from "./types";
+import type {
+  Area,
+  AreaPoint,
+  Floor,
+  RectAreaAutoWallSide,
+  RectAreaAutoWallState,
+  RenderHass,
+  Wall,
+} from "./types";
 import { polygonCentroid, pointInPolygon, textLabel } from "./render";
 
 /** Element kinds addressable by the editor's selection model. */
@@ -88,6 +96,49 @@ export function rectAreaEdgeResize(points: readonly AreaPoint[], edgeIndex: numb
     { x: maxX, y: maxY },
     { x: minX, y: maxY },
   ];
+}
+
+export function rectAreaAutoWallNext(
+  state: RectAreaAutoWallState | undefined
+): RectAreaAutoWallState {
+  switch (state) {
+    case undefined:
+    case "none":
+      return "wall";
+    case "wall":
+      return "divider";
+    case "divider":
+      return "none";
+    default:
+      return "wall";
+  }
+}
+
+export function rectAreaSideWalls(
+  points: readonly AreaPoint[],
+  autoWalls: Partial<Record<RectAreaAutoWallSide, RectAreaAutoWallState>> = {}
+): Wall[] {
+  if (points.length < 4) return [];
+  const [topLeft, topRight, bottomRight, bottomLeft] = points;
+  const sides: Record<RectAreaAutoWallSide, { x1: number; y1: number; x2: number; y2: number }> = {
+    top: { x1: topLeft.x, y1: topLeft.y, x2: topRight.x, y2: topRight.y },
+    right: { x1: topRight.x, y1: topRight.y, x2: bottomRight.x, y2: bottomRight.y },
+    bottom: { x1: bottomRight.x, y1: bottomRight.y, x2: bottomLeft.x, y2: bottomLeft.y },
+    left: { x1: bottomLeft.x, y1: bottomLeft.y, x2: topLeft.x, y2: topLeft.y },
+  };
+
+  return (Object.keys(sides) as RectAreaAutoWallSide[])
+    .filter((side) => autoWalls[side] === "wall" || autoWalls[side] === "divider")
+    .map((side) => {
+      const base = {
+        id: `area-wall-${side}`,
+        ...sides[side],
+        thickness: 8,
+      };
+      return autoWalls[side] === "divider"
+        ? { ...base, divider: true }
+        : base;
+    });
 }
 
 type WallSegment = Pick<Wall, "x1" | "y1" | "x2" | "y2">;

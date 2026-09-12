@@ -159,8 +159,10 @@ import {
   layoutPointsInPolygon,
   nearestAreaSnapPoint,
   nearestCorner,
+  rectAreaAutoWallNext,
   rectAreaEdgeResize,
   rectAreaPoints,
+  rectAreaSideWalls,
   snapWallEnd,
   type AttachedCorner,
   type OrigPos,
@@ -3715,6 +3717,7 @@ export class FloorplanCardEditor extends LitElement {
               ${floor.furniture.map((f) => this._renderFurnitureSel(f))}
               ${renderWallMask(floor.openings, c.width, c.height, this._wallMaskId)}
               ${floor.walls.map((w) => this._renderWall(w))}
+              ${(floor.areas ?? []).flatMap((a) => rectAreaSideWalls(a.points, a.autoWalls ?? {})).map((w) => this._renderWall(w))}
               <!-- Room outlines, same layer position as the card so what you
                    place is what you get. Only a static borderColor draws here,
                    there being no hass to resolve a live color from — but the
@@ -4318,6 +4321,19 @@ export class FloorplanCardEditor extends LitElement {
     // to grab, and their absence is the clearest signal on the canvas that
     // the wall is pinned.
     const handles = selected && !w.locked;
+    const autoWallInfo = w.id.startsWith("area-wall-")
+      ? (this._floor().areas ?? []).find((a) =>
+          rectAreaSideWalls(a.points, a.autoWalls ?? {}).some((segment) => segment.id === w.id)
+        )
+      : undefined;
+    const autoWallSide = autoWallInfo
+      ? (w.id.replace(/^area-wall-/, "") as "top" | "right" | "bottom" | "left")
+      : undefined;
+    const autoWallToggle = !!autoWallInfo && !autoWallInfo.locked;
+    const sideState = autoWallInfo?.autoWalls?.[autoWallSide!];
+    const style = w.divider
+      ? "stroke-width:2; stroke-dasharray:2 12; opacity:0.7;"
+      : wallStrokeStyle(w.thickness);
     return svg`
       <g>
         <line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
@@ -4326,7 +4342,7 @@ export class FloorplanCardEditor extends LitElement {
         <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
               class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""}"
               mask=${`url(#${this._wallMaskId})`}
-              style=${wallStrokeStyle(w.thickness, w.kind)} stroke-linecap="round" /></g>
+              style=${style} stroke-linecap="round" /></g>
         ${
           handles
             ? svg`
@@ -4336,6 +4352,25 @@ export class FloorplanCardEditor extends LitElement {
                 <circle cx=${w.x2} cy=${w.y2} r="9" class="handle"
                         @pointerdown=${(e: PointerEvent) =>
                           this._startDrag(e, { kind: "wall", id: w.id }, 2)} />`
+            : nothing
+        }
+        ${
+          autoWallToggle
+            ? svg`
+                <path
+                  d=${(() => {
+                    const cx = (w.x1 + w.x2) / 2;
+                    const cy = (w.y1 + w.y2) / 2;
+                    const s = 7;
+                    return `M ${cx} ${cy - s} L ${cx + s} ${cy} L ${cx} ${cy + s} L ${cx - s} ${cy} Z`;
+                  })()}
+                  class=${["area-wall-toggle", sideState ?? "none"].join(" ")}
+                  title=${sideState ? `Double-click to cycle this ${autoWallSide} wall: ${sideState}` : `Double-click to add a wall on the ${autoWallSide} side`}
+                  @dblclick=${(e: PointerEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this._toggleRectAreaSide(autoWallInfo!, ["top", "right", "bottom", "left"].indexOf(autoWallSide!));
+                  }} />`
             : nothing
         }
       </g>`;
@@ -4450,6 +4485,16 @@ export class FloorplanCardEditor extends LitElement {
     </p>`;
   }
 
+  private _toggleRectAreaSide(a: Area, edgeIndex: number): void {
+    const sides = ["top", "right", "bottom", "left"] as const;
+    const side = sides[edgeIndex % sides.length];
+    const next = rectAreaAutoWallNext(a.autoWalls?.[side]);
+    const autoWalls = { ...(a.autoWalls ?? {}) };
+    if (next === "none") delete autoWalls[side];
+    else autoWalls[side] = next;
+    this._updateArea(a.id, { autoWalls: Object.keys(autoWalls).length ? autoWalls : undefined });
+  }
+
   private _renderAreaSel(a: Area, scopingId?: string): TemplateResult {
     const selected = this._isSel("area", a.id);
     const scoping = a.id === scopingId;
@@ -4478,14 +4523,29 @@ export class FloorplanCardEditor extends LitElement {
                       const next = a.points[(i + 1) % a.points.length];
                       const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
                       const isHorizontal = Math.abs(p.y - next.y) < 0.001;
+                      const side = ["top", "right", "bottom", "left"][i] as "top" | "right" | "bottom" | "left";
+                      const sideState = a.autoWalls?.[side];
                       return svg`
                         <circle
                           cx=${mid.x}
                           cy=${mid.y}
                           r="5"
-                          class=${isHorizontal ? "handle area-edge-handle ns" : "handle area-edge-handle ew"}
+                          class=${[
+                            "handle",
+                            "area-edge-handle",
+                            isHorizontal ? "ns" : "ew",
+                            sideState ? "auto-wall-toggle" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          title=${sideState ? `Double-click to cycle this ${side} wall: ${sideState}` : `Double-click to add a wall on the ${side} side`}
                           @pointerdown=${(e: PointerEvent) =>
-                            this._startDrag(e, { kind: "area", id: a.id }, undefined, undefined, i)} />`;
+                            this._startDrag(e, { kind: "area", id: a.id }, undefined, undefined, i)}
+                          @dblclick=${(e: PointerEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            this._toggleRectAreaSide(a, i);
+                          }} />`;
                     })
                   : []),
               ]
@@ -5820,6 +5880,13 @@ export class FloorplanCardEditor extends LitElement {
           this._renderForm(formSlice(aSpec, ["entity"]), aApply)
         )}
         ${this._renderGroup(
+          "Auto walls",
+          this._renderForm(
+            formSlice(aSpec, ["autoWallsTop", "autoWallsRight", "autoWallsBottom", "autoWallsLeft"]),
+            aApply
+          )
+        )}
+        ${this._renderGroup(
           "Color",
           this._renderForm(formSlice(aSpec, ["highlight", "opacity", "activeOpacity"]), aApply),
           this._renderColorRow({
@@ -6701,6 +6768,24 @@ export class FloorplanCardEditor extends LitElement {
     }
     .area-edge-handle.ns {
       cursor: ns-resize;
+    }
+    .area-edge-handle.auto-wall-toggle.ew,
+    .area-edge-handle.auto-wall-toggle.ns,
+    .area-wall-toggle {
+      cursor: pointer;
+      fill: var(--card-background-color, #fff);
+      stroke: var(--fp-skin-wall, var(--primary-text-color));
+      stroke-width: 2;
+      stroke-linejoin: round;
+      vector-effect: non-scaling-stroke;
+    }
+    .area-wall-toggle.wall {
+      fill: var(--fp-skin-wall, var(--primary-text-color));
+      stroke: var(--fp-skin-wall, var(--primary-text-color));
+    }
+    .area-wall-toggle.divider {
+      fill: var(--card-background-color, #fff);
+      stroke-dasharray: 2 2;
     }
     .items {
       position: absolute;

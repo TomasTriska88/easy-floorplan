@@ -16,6 +16,8 @@ import {
   rectAreaPoints,
   rectAreaVertexResize,
   rectAreaEdgeResize,
+  rectAreaSideWalls,
+  rectAreaAutoWallNext,
 } from "./editor-geometry";
 import type { OrigPos } from "./editor-geometry";
 import type { Area, Floor, RenderHass, Wall } from "./types";
@@ -379,6 +381,25 @@ describe("rectAreaEdgeResize", () => {
       { x: 5, y: 0 },
       { x: 5, y: 10 },
       { x: 0, y: 10 },
+    ]);
+  });
+});
+
+describe("rectAreaAutoWallNext", () => {
+  it("cycles edge states none → wall → divider → none", () => {
+    expect(rectAreaAutoWallNext(undefined)).toBe("wall");
+    expect(rectAreaAutoWallNext("wall")).toBe("divider");
+    expect(rectAreaAutoWallNext("divider")).toBe("none");
+    expect(rectAreaAutoWallNext("none")).toBe("wall");
+  });
+});
+
+describe("rectAreaSideWalls", () => {
+  it("creates wall or divider segments for configured rectangle edges", () => {
+    const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    expect(rectAreaSideWalls(pts, { top: "wall", right: "divider" })).toEqual([
+      { id: "area-wall-top", x1: 0, y1: 0, x2: 10, y2: 0, thickness: 8 },
+      { id: "area-wall-right", x1: 10, y1: 0, x2: 10, y2: 10, thickness: 8, divider: true },
     ]);
   });
 });

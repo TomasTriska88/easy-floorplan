@@ -60,6 +60,8 @@ export interface Wall {
   y1: number;
   x2: number;
   y2: number;
+  /** Divider line, drawn with the wall styling but dashed to read as a cut. */
+  divider?: boolean;
   /**
    * Stroke width in virtual units. Defaults to {@link WALL_THICKNESS}
    * (render.ts) when unset, and clamped there (`wallThickness`) to at most
@@ -1149,6 +1151,17 @@ export interface AreaPoint {
   x: number;
   y: number;
 }
+
+export const RECT_AREA_AUTO_WALL_SIDES = ["top", "right", "bottom", "left"] as const;
+export type RectAreaAutoWallSide = (typeof RECT_AREA_AUTO_WALL_SIDES)[number];
+export type RectAreaAutoWallState = "none" | "wall" | "divider";
+
+/**
+ * Rectangle room auto walls: each side can be left alone, turned into a wall,
+ * or drawn as a divider line. The object is optional so polygon room areas
+ * and older YAML remain unchanged.
+ */
+export type RectAreaAutoWalls = Partial<Record<RectAreaAutoWallSide, RectAreaAutoWallState>>;
 
 /**
  * A named room polygon, drawn point-by-point in the editor and closed by

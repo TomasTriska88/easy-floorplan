@@ -160,6 +160,7 @@ import {
 } from "./actions";
 import { actionHandler } from "./action-handler";
 import { renderAmbientDaylightLayer } from "./ambient-daylight-integration";
+import { rectAreaSideWalls } from "./editor-geometry";
 import { ReplayControllerImpl } from "./replay-history/replay-controller";
 import { createReplayPanelProps, renderReplayPanel } from "./replay-history/replay-panel";
 
@@ -1383,13 +1384,14 @@ export class FloorplanCard extends LitElement {
                 : nothing
             }
             ${renderWallMask(active.openings, c.width, c.height, this._wallMaskId)}
-            ${active.walls.map(
+            ${[...active.walls, ...active.areas.flatMap((a) => rectAreaSideWalls(a.points, a.autoWalls ?? {}))].map(
                 (w) => svg`
                 <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
                       class="wall fp-wall ${isRailing(w) ? "railing" : ""}"
                       data-id=${cssIdent(w.id) ?? nothing}
                       mask=${`url(#${this._wallMaskId})`}
-                      style=${wallStrokeStyle(w.thickness, w.kind)} stroke-linecap="round" /></g>`
+                      style=${w.divider ? "stroke-width:2; stroke-dasharray:2 12; opacity:0.7;" : wallStrokeStyle(w.thickness, w.kind)}
+                      stroke-linecap="round" /></g>`
               )}
             <!-- Room outlines, above the walls they trace. An area polygon runs
                  down the centerline of the room's walls, so an outline drawn
