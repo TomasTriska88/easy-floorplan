@@ -50,6 +50,8 @@ import {
   domainIconAnimation,
   isRippleEntity,
   normalizeOverlayScale,
+  normalizeOverlayMinWidth,
+  MAX_OVERLAY_MIN_WIDTH,
   normalizePlanRotation,
   openingActionForGesture,
   openingMotion,
@@ -2077,6 +2079,14 @@ export function projectDisplayForm(c: FloorplanCardConfig): FormSpec {
         helper: `Canvas units scale badges and labels with the drawing. Fixed pixels keep their size whatever width the card gets — suits a card rendered larger than its ${c.width}-wide canvas, or a wall tablet`,
         selector: dropdown(opt("plan", "Canvas units"), opt("fixed", "Fixed pixels")),
       },
+      ...(normalizeOverlayScale(c.overlayScale) === "plan"
+        ? [{
+            name: "overlayMinWidth",
+            label: "Stop shrinking below",
+            helper: "Keeps badges and labels sized for at least this plan width. 0 allows normal scaling; larger values can cause overlaps on small cards",
+            selector: { number: { min: 0, max: MAX_OVERLAY_MIN_WIDTH, step: 20, mode: "slider", unit_of_measurement: "px" } },
+          }]
+        : []),
       {
         name: "compactHeader",
         label: "Compact header",
@@ -2117,6 +2127,7 @@ export function projectDisplayForm(c: FloorplanCardConfig): FormSpec {
       rotationLandscape:
         c.rotationLandscape == null ? "" : String(normalizePlanRotation(c.rotationLandscape)),
       overlayScale: normalizeOverlayScale(c.overlayScale),
+      overlayMinWidth: normalizeOverlayMinWidth(c.overlayMinWidth) ?? 0,
       compactHeader: c.compactHeader ?? false,
       zoomedOverlayScale: c.zoomedOverlayScale ?? DEFAULT_ZOOMED_OVERLAY_SCALE,
       offlineStyle: offlineStyleOf(c),
@@ -2142,6 +2153,8 @@ export function projectDisplayForm(c: FloorplanCardConfig): FormSpec {
       // As are the ordinary header and the dimmed offline device — every
       // default here stays out of the YAML, so a config only ever records the
       // choices someone actually made.
+      if ("overlayMinWidth" in out)
+        out = { ...out, overlayMinWidth: normalizeOverlayMinWidth(out.overlayMinWidth) };
       if ("compactHeader" in out && !out.compactHeader)
         out = { ...out, compactHeader: undefined };
       if ("offlineStyle" in out && out.offlineStyle === DEFAULT_OFFLINE_STYLE)
