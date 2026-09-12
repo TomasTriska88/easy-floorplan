@@ -394,6 +394,8 @@ export class FloorplanCardEditor extends LitElement {
   @state() private _draftArea: { points: AreaPoint[] } | null = null;
   /** Live cursor position while drawing an Area, for the rubber-band preview segment. */
   @state() private _areaHover: AreaPoint | null = null;
+  /** Anchor point while drawing a rectangle room with the area-rectangle tool. */
+  @state() private _areaDragStart: { x: number; y: number } | null = null;
   /** When true, walls are drawn freely (no horizontal/vertical or corner gravity). */
   @state() private _freeWalls = false;
   /** Default length applied to a freshly placed door/window. User-editable from the context bar. */
@@ -4329,18 +4331,43 @@ export class FloorplanCardEditor extends LitElement {
     const autoWallSide = autoWallInfo
       ? (w.id.replace(/^area-wall-/, "") as "top" | "right" | "bottom" | "left")
       : undefined;
+    const autoWallIndex = autoWallSide ? ["top", "right", "bottom", "left"].indexOf(autoWallSide) : -1;
     const autoWallToggle = !!autoWallInfo && !autoWallInfo.locked;
     const sideState = autoWallInfo?.autoWalls?.[autoWallSide!];
+    const sideIsHorizontal = Math.abs(w.y1 - w.y2) < 0.001;
+    const edgeCursorClass = sideIsHorizontal ? "ns" : "ew";
     const style = w.divider
       ? "stroke-width:2; stroke-dasharray:2 12; opacity:0.7;"
-      : wallStrokeStyle(w.thickness);
+      : wallStrokeStyle(w.thickness, w.kind);
     return svg`
       <g>
         <line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
-              class="wall-hit"
-              @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "wall", id: w.id })} />
+              class=${["wall-hit", autoWallInfo ? "auto-wall-edge" : "", edgeCursorClass].filter(Boolean).join(" ")}
+              @pointerdown=${(e: PointerEvent) => {
+                if (e.detail >= 2) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (autoWallInfo) {
+                    this._toggleRectAreaSide(autoWallInfo, autoWallIndex);
+                    return;
+                  }
+                  // Regular walls don't toggle; a true wall line is just a drag target.
+                  return;
+                }
+                if (autoWallInfo) {
+                  this._startDrag(e, { kind: "area", id: autoWallInfo.id }, undefined, undefined, autoWallIndex);
+                  return;
+                }
+                this._startDrag(e, { kind: "wall", id: w.id });
+              }}
+              @dblclick=${(e: PointerEvent) => {
+                if (!autoWallInfo) return;
+                e.preventDefault();
+                e.stopPropagation();
+                this._toggleRectAreaSide(autoWallInfo, autoWallIndex);
+              }} />
         <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
-              class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""}"
+            class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""} ${autoWallInfo ? "auto-wall-edge" : ""} ${edgeCursorClass}"
               mask=${`url(#${this._wallMaskId})`}
               style=${style} stroke-linecap="round" /></g>
         ${
@@ -4519,34 +4546,60 @@ export class FloorplanCardEditor extends LitElement {
                               this._startDrag(e, { kind: "area", id: a.id }, undefined, i)} />`
                 ),
                 ...(a.points.length === 4
-                  ? a.points.map((p, i) => {
-                      const next = a.points[(i + 1) % a.points.length];
-                      const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
-                      const isHorizontal = Math.abs(p.y - next.y) < 0.001;
-                      const side = ["top", "right", "bottom", "left"][i] as "top" | "right" | "bottom" | "left";
-                      const sideState = a.autoWalls?.[side];
-                      return svg`
-                        <circle
-                          cx=${mid.x}
-                          cy=${mid.y}
-                          r="5"
-                          class=${[
-                            "handle",
-                            "area-edge-handle",
-                            isHorizontal ? "ns" : "ew",
-                            sideState ? "auto-wall-toggle" : "",
-                          ]
-                            .filter(Boolean)
-                            .join(" ")}
-                          title=${sideState ? `Double-click to cycle this ${side} wall: ${sideState}` : `Double-click to add a wall on the ${side} side`}
-                          @pointerdown=${(e: PointerEvent) =>
-                            this._startDrag(e, { kind: "area", id: a.id }, undefined, undefined, i)}
-                          @dblclick=${(e: PointerEvent) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            this._toggleRectAreaSide(a, i);
-                          }} />`;
-                    })
+                  ? [
+                      ...a.points.map((p, i) => {
+                        const next = a.points[(i + 1) % a.points.length];
+                        const isHorizontal = Math.abs(p.y - next.y) < 0.001;
+                        const cursorClass = isHorizontal ? "ns" : "ew";
+                        return svg`
+                          <line
+                            x1=${p.x} y1=${p.y} x2=${next.x} y2=${next.y}
+                            class=${["area-edge-hit", cursorClass].join(" ")}
+                            @pointerdown=${(e: PointerEvent) => {
+                              this._startDrag(e, { kind: "area", id: a.id }, undefined, undefined, i);
+                            }}
+                            @dblclick=${(e: PointerEvent) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              this._toggleRectAreaSide(a, i);
+                            }} />`;
+                      }),
+                      ...a.points.map((p, i) => {
+                        const next = a.points[(i + 1) % a.points.length];
+                        const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
+                        const isHorizontal = Math.abs(p.y - next.y) < 0.001;
+                        const side = ["top", "right", "bottom", "left"][i] as "top" | "right" | "bottom" | "left";
+                        const sideState = a.autoWalls?.[side];
+                        return svg`
+                          <circle
+                            cx=${mid.x}
+                            cy=${mid.y}
+                            r="5"
+                            class=${[
+                              "handle",
+                              "area-edge-handle",
+                              isHorizontal ? "ns" : "ew",
+                              sideState ? "auto-wall-toggle" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ")}
+                            title=${sideState ? `Double-click to cycle this ${side} wall: ${sideState}` : `Double-click to add a wall on the ${side} side`}
+                            @pointerdown=${(e: PointerEvent) => {
+                              if (e.detail >= 2) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                this._toggleRectAreaSide(a, i);
+                                return;
+                              }
+                              this._startDrag(e, { kind: "area", id: a.id }, undefined, undefined, i);
+                            }}
+                            @dblclick=${(e: PointerEvent) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              this._toggleRectAreaSide(a, i);
+                            }} />`;
+                      }),
+                    ]
                   : []),
               ]
             : nothing
@@ -5880,13 +5933,6 @@ export class FloorplanCardEditor extends LitElement {
           this._renderForm(formSlice(aSpec, ["entity"]), aApply)
         )}
         ${this._renderGroup(
-          "Auto walls",
-          this._renderForm(
-            formSlice(aSpec, ["autoWallsTop", "autoWallsRight", "autoWallsBottom", "autoWallsLeft"]),
-            aApply
-          )
-        )}
-        ${this._renderGroup(
           "Color",
           this._renderForm(formSlice(aSpec, ["highlight", "opacity", "activeOpacity"]), aApply),
           this._renderColorRow({
@@ -6515,6 +6561,14 @@ export class FloorplanCardEditor extends LitElement {
       stroke-width: 22;
       cursor: move;
     }
+    .wall-hit.auto-wall-edge.ns,
+    .wall.auto-wall-edge.ns {
+      cursor: ns-resize;
+    }
+    .wall-hit.auto-wall-edge.ew,
+    .wall.auto-wall-edge.ew {
+      cursor: ew-resize;
+    }
     .opening-hit {
       cursor: move;
     }
@@ -6763,10 +6817,20 @@ export class FloorplanCardEditor extends LitElement {
       stroke-width: 1.5;
       cursor: grab;
     }
-    .area-edge-handle.ew {
+    .area-edge-hit {
+      stroke: transparent;
+      stroke-width: 18;
+      cursor: pointer;
+      pointer-events: stroke;
+    }
+    .area-edge-hit.ew,
+    .area-edge-handle.ew,
+    .area-wall-toggle.ew {
       cursor: ew-resize;
     }
-    .area-edge-handle.ns {
+    .area-edge-hit.ns,
+    .area-edge-handle.ns,
+    .area-wall-toggle.ns {
       cursor: ns-resize;
     }
     .area-edge-handle.auto-wall-toggle.ew,

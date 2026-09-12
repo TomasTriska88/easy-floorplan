@@ -1212,6 +1212,12 @@ export interface Area {
    */
   haArea?: string;
   /**
+   * Runtime-only rectangle edge state for generated room walls/dividers. The
+   * editor toggles these on the fly without exposing them as a user-facing
+   * config field.
+   */
+  autoWalls?: RectAreaAutoWalls;
+  /**
    * With `haArea` linked, scope the entity picker (for devices placed inside
    * this polygon) to that HA area's entities. Default true. Has no effect
    * without a linked `haArea`.

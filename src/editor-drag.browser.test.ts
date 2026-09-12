@@ -48,7 +48,13 @@ function config(): FloorplanCardConfig {
 
 const POINTER_ID = 7;
 
-function pointer(target: Element, type: string, clientX: number, clientY: number): void {
+function pointer(
+  target: Element,
+  type: string,
+  clientX: number,
+  clientY: number,
+  detail = 1
+): void {
   target.dispatchEvent(
     new PointerEvent(type, {
       clientX,
@@ -61,6 +67,7 @@ function pointer(target: Element, type: string, clientX: number, clientY: number
       bubbles: true,
       composed: true,
       cancelable: true,
+      detail,
     })
   );
 }
@@ -192,5 +199,56 @@ describe("editor drag", () => {
     const pos = itemPosition(t.emitted[0]);
     expect(pos.x).toBeCloseTo(ITEM_START.x + 50 / ctm.a, 0);
     expect(pos.y).toBeCloseTo(ITEM_START.y + 40 / ctm.d, 0);
+  });
+
+  it("drags and toggles a selected area's edge segment away from the endpoints", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "room1",
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 200 },
+                { x: 100, y: 200 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "room1" }];
+    await ed.updateComplete;
+
+    const edge = ed.shadowRoot!.querySelector<SVGLineElement>(".area-edge-hit")!;
+    expect(edge).not.toBeNull();
+
+    const from = center(edge);
+    pointer(edge, "pointerdown", from.x, from.y);
+    pointer(edge, "pointermove", from.x, from.y + 40);
+    pointer(edge, "pointerup", from.x, from.y + 40);
+    await ed.updateComplete;
+
+    const areaAfterDrag = (ed as any)._floor().areas[0];
+    expect(areaAfterDrag.points[0].y).toBeGreaterThan(100);
+
+    edge.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, composed: true, cancelable: true }));
+    await ed.updateComplete;
+
+    expect((ed as any)._floor().areas[0].autoWalls?.top).toBe("wall");
+    document.body.innerHTML = "";
   });
 });
