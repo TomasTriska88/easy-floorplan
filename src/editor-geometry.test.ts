@@ -18,6 +18,7 @@ import {
   rectAreaEdgeResize,
   rectAreaSideWalls,
   rectAreaAutoWallNext,
+  rectAreaClamp,
 } from "./editor-geometry";
 import type { OrigPos } from "./editor-geometry";
 import type { Area, Floor, RenderHass, Wall } from "./types";
@@ -380,6 +381,30 @@ describe("rectAreaEdgeResize", () => {
       { x: 0, y: 0 },
       { x: 5, y: 0 },
       { x: 5, y: 10 },
+      { x: 0, y: 10 },
+    ]);
+  });
+});
+
+describe("rectAreaClamp", () => {
+  it("stops a rectangle at a neighbor edge instead of intersecting it", () => {
+    const moving = [{ x: 30, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 20 }, { x: 30, y: 20 }];
+    const other: Area[] = [{ id: "other", points: [{ x: 50, y: 0 }, { x: 80, y: 0 }, { x: 80, y: 20 }, { x: 50, y: 20 }] }];
+    expect(rectAreaClamp(moving, other, { dx: 20, dy: 0 })).toEqual([
+      { x: 30, y: 0 },
+      { x: 50, y: 0 },
+      { x: 50, y: 20 },
+      { x: 30, y: 20 },
+    ]);
+  });
+
+  it("keeps a shared wall coincident when a rectangle is dragged up to its neighbor", () => {
+    const moving = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const other: Area[] = [{ id: "other", points: [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }] }];
+    expect(rectAreaClamp(moving, other, { dx: 10, dy: 0 })).toEqual([
+      { x: 0, y: 0 },
+      { x: 20, y: 0 },
+      { x: 20, y: 10 },
       { x: 0, y: 10 },
     ]);
   });

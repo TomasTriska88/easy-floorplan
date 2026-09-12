@@ -98,6 +98,61 @@ export function rectAreaEdgeResize(points: readonly AreaPoint[], edgeIndex: numb
   ];
 }
 
+function rectBounds(points: readonly AreaPoint[]): { minX: number; maxX: number; minY: number; maxY: number } {
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
+
+export function rectAreaClamp(
+  points: readonly AreaPoint[],
+  areas: readonly Area[],
+  delta: { dx: number; dy: number } = { dx: 0, dy: 0 }
+): AreaPoint[] {
+  let box = rectBounds(points);
+
+  for (const other of areas) {
+    const otherBox = rectBounds(other.points);
+    const overlaps =
+      box.maxX > otherBox.minX &&
+      box.minX < otherBox.maxX &&
+      box.maxY > otherBox.minY &&
+      box.minY < otherBox.maxY;
+
+    if (!overlaps) continue;
+
+    const width = box.maxX - box.minX;
+    const height = box.maxY - box.minY;
+    if (delta.dx > 0) {
+      box = { ...box, maxX: Math.min(box.maxX, otherBox.minX) };
+    } else if (delta.dx < 0) {
+      box = { ...box, minX: Math.max(box.minX, otherBox.maxX) };
+    } else if (delta.dy > 0) {
+      box = { ...box, maxY: Math.min(box.maxY, otherBox.minY) };
+    } else if (delta.dy < 0) {
+      box = { ...box, minY: Math.max(box.minY, otherBox.maxY) };
+    } else if (width >= height) {
+      if (box.minX < otherBox.maxX) box = { ...box, maxX: otherBox.minX };
+      else box = { ...box, minX: otherBox.maxX };
+    } else {
+      if (box.minY < otherBox.maxY) box = { ...box, maxY: otherBox.minY };
+      else box = { ...box, minY: otherBox.maxY };
+    }
+  }
+
+  return [
+    { x: box.minX, y: box.minY },
+    { x: box.maxX, y: box.minY },
+    { x: box.maxX, y: box.maxY },
+    { x: box.minX, y: box.maxY },
+  ];
+}
+
 export function rectAreaAutoWallNext(
   state: RectAreaAutoWallState | undefined
 ): RectAreaAutoWallState {

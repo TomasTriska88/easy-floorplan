@@ -160,6 +160,7 @@ import {
   nearestAreaSnapPoint,
   nearestCorner,
   rectAreaAutoWallNext,
+  rectAreaClamp,
   rectAreaEdgeResize,
   rectAreaPoints,
   rectAreaSideWalls,
@@ -1493,14 +1494,13 @@ export class FloorplanCardEditor extends LitElement {
       const raw = this._toVirtual(ev, false);
       const start = this._areaDragStart;
       if (start) {
-        this._draftArea = {
-          points: rectAreaPoints({
-            x0: start.x,
-            y0: start.y,
-            x1: this._snap(raw.x),
-            y1: this._snap(raw.y),
-          }),
-        };
+        const target = { x: this._snap(raw.x), y: this._snap(raw.y) };
+        const points = rectAreaClamp(
+          rectAreaPoints({ x0: start.x, y0: start.y, x1: target.x, y1: target.y }),
+          this._floor().areas ?? [],
+          { dx: target.x - start.x, dy: target.y - start.y }
+        );
+        this._draftArea = { points };
       }
       this._areaHover = null;
       return;
@@ -1549,7 +1549,8 @@ export class FloorplanCardEditor extends LitElement {
       const width = Math.abs(d.points[1]!.x - d.points[0]!.x);
       const height = Math.abs(d.points[3]!.y - d.points[0]!.y);
       if (width > 0 && height > 0) {
-        const rect: Area = { id: uid("area"), points: d.points, showName: true };
+        const points = rectAreaClamp(d.points, this._floor().areas ?? [], { dx: 0, dy: 0 });
+        const rect: Area = { id: uid("area"), points, showName: true };
         this._commitFloor({ areas: [...(this._floor().areas ?? []), rect] });
         this._selection = [{ kind: "area", id: rect.id }];
       }
@@ -1754,11 +1755,12 @@ export class FloorplanCardEditor extends LitElement {
     if (drag.primary.kind === "area" && drag.areaVertex != null) {
       const idx = drag.areaVertex;
       const target = this._snapAreaPoint(p.x, p.y, { areaId: drag.primary.id, vertexIndex: idx });
-      const areas = (f.areas ?? []).map((a) =>
-        a.id === drag.primary.id
-          ? { ...a, points: a.points.map((pt, i) => (i === idx ? target : pt)) }
-          : a
-      );
+      const areas = (f.areas ?? []).map((a) => {
+        if (a.id !== drag.primary.id) return a;
+        const points = a.points.map((pt, i) => (i === idx ? target : pt));
+        const otherAreas = (f.areas ?? []).filter((b) => b.id !== drag.primary.id);
+        return { ...a, points: rectAreaClamp(points, otherAreas, { dx: target.x - a.points[idx]!.x, dy: target.y - a.points[idx]!.y }) };
+      });
       this._emitFloor({ areas });
       return;
     }
@@ -1769,11 +1771,15 @@ export class FloorplanCardEditor extends LitElement {
     if (drag.primary.kind === "area" && drag.areaEdge != null) {
       const idx = drag.areaEdge;
       const target = this._snapAreaPoint(p.x, p.y, { areaId: drag.primary.id, vertexIndex: idx });
-      const areas = (f.areas ?? []).map((a) =>
-        a.id === drag.primary.id
-          ? { ...a, points: rectAreaEdgeResize(a.points, idx, target) }
-          : a
-      );
+      const areas = (f.areas ?? []).map((a) => {
+        if (a.id !== drag.primary.id) return a;
+        const points = rectAreaEdgeResize(a.points, idx, target);
+        const otherAreas = (f.areas ?? []).filter((b) => b.id !== drag.primary.id);
+        const edgeStart = a.points[idx % 4] ?? a.points[0]!;
+        const dx = target.x - edgeStart.x;
+        const dy = target.y - edgeStart.y;
+        return { ...a, points: rectAreaClamp(points, otherAreas, { dx, dy }) };
+      });
       this._emitFloor({ areas });
       return;
     }
