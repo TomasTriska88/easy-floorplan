@@ -669,6 +669,33 @@ describe("the editor lets you drag the switcher anywhere on the canvas", () => {
     expect(t.emitted).toEqual([]);
   });
 
+  it("lets a drawing gesture through when a tool other than Select is active", async () => {
+    // Only Select moves the switcher, so under the wall tool the handle must
+    // not stand between the pointer and the canvas — a wall started where the
+    // handle happens to sit should start, not vanish into a handler that
+    // ignores every tool but one.
+    const t = await mountEditor();
+    const root = t.ed.shadowRoot!;
+    // A hit-test only answers for points on screen, and the test viewport is
+    // narrower than this editor — the handle's corner starts off to the right.
+    t.handle().scrollIntoView({ block: "center", inline: "center" });
+    const at = t.handleCentre();
+    // Under Select the handle is what the pointer hits.
+    expect(t.handle().contains(root.elementFromPoint(at.x, at.y))).toBe(true);
+
+    (t.ed as unknown as { _tool: string })._tool = "wall";
+    await t.ed.updateComplete;
+    const hit = root.elementFromPoint(at.x, at.y)!;
+    expect(t.handle().contains(hit)).toBe(false);
+    // …and the handle is still drawn, as the footprint the card will cover.
+    expect(t.handle().getBoundingClientRect().width).toBeGreaterThan(0);
+
+    // A real hit-test target, so this is the element a real press would reach.
+    hit.dispatchEvent(t.ptr("pointerdown", at));
+    await t.ed.updateComplete;
+    expect((t.ed as unknown as { _draft: unknown })._draft).not.toBeNull();
+  });
+
   it("applies one move a frame, not one an event", async () => {
     // `_config` is reactive, so writing it per raw pointermove re-renders the
     // whole editor at pointer rate and the handle falls behind the cursor.

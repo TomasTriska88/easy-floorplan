@@ -4667,7 +4667,7 @@ export class FloorplanCardEditor extends LitElement {
         class="switcher-handle ${c.compactHeader === true ? "row" : ""} ${this
           ._switcherDrag
           ? "dragging"
-          : ""} ${placed ? "" : "default"}"
+          : ""} ${placed ? "" : "default"} ${this._tool === "select" ? "" : "passive"}"
         style="left:${(at.x / w) * 100}%; top:${(at.y / h) * 100}%;"
         title=${placed
           ? "Drag to move the floor switcher"
@@ -7547,6 +7547,15 @@ export class FloorplanCardEditor extends LitElement {
       cursor: grab;
       touch-action: none;
       z-index: 4;
+    }
+    /* Only the Select tool moves the switcher, so under a drawing tool the
+       handle is just in the way: it sits above the canvas and would swallow a
+       wall, door or area gesture started beneath it, since its own pointerdown
+       handler ignores every tool but Select. It stays visible, as the footprint
+       the card's buttons will cover, and lets the pointer through. */
+    .switcher-handle.passive {
+      pointer-events: none;
+      cursor: default;
     }
     .switcher-handle.dragging {
       cursor: grabbing;
