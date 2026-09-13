@@ -163,6 +163,8 @@ import {
   rectAreaClamp,
   rectAreaEdgeResize,
   rectAreaPoints,
+  rectAreaSharedEdgeCouple,
+  rectAreaSharedSides,
   rectAreaSideWalls,
   snapWallEnd,
   type AttachedCorner,
@@ -1701,6 +1703,93 @@ export class FloorplanCardEditor extends LitElement {
     return m;
   }
 
+  /**
+   * Keep full-side-adjacent rectangle rooms synchronized while one side moves.
+   *
+   * Returns the updated `areas` array plus the ids of rooms that actually
+   * coupled to the primary room during this move.
+   */
+  private _coupleRectAreaSharedEdges(
+    primaryId: string,
+    points: AreaPoint[],
+    delta: { dx: number; dy: number },
+    areas: readonly Area[]
+  ): { areas: Area[]; coupledIds: Set<string> } {
+    let primaryPoints = points;
+    const updated = new Map<string, AreaPoint[]>();
+    const coupledIds = new Set<string>();
+
+    const debugEnabled = (() => {
+      const g = globalThis as typeof globalThis & {
+        __EASY_FLOORPLAN_DEBUG__?: boolean;
+      };
+
+      if (g.__EASY_FLOORPLAN_DEBUG__ === true) return true;
+
+      if (typeof window !== "undefined") {
+        try {
+          const search = new URLSearchParams(window.location.search);
+          if (search.get("easy-floorplan-debug") === "1" || search.get("easy-floorplan-debug") === "true") {
+            return true;
+          }
+          const saved = window.localStorage.getItem("easy-floorplan-debug");
+          if (saved === "1" || saved === "true") return true;
+        } catch {
+          // Some browsers block storage access in restricted contexts; ignore and continue.
+        }
+      }
+
+      return false;
+    })();
+
+    if (debugEnabled) {
+      console.log("[easy-floorplan:area] _coupleRectAreaSharedEdges start", JSON.stringify({
+        primaryId,
+        delta,
+        areaCount: areas.length,
+        primaryPoints,
+      }));
+    }
+
+    for (const other of areas) {
+      if (other.id === primaryId) continue;
+      const otherPoints = updated.get(other.id) ?? other.points;
+      const coupled = rectAreaSharedEdgeCouple(primaryPoints, otherPoints, delta);
+      if (!coupled) continue;
+      primaryPoints = coupled.points;
+      updated.set(other.id, coupled.other);
+      coupledIds.add(other.id);
+      if (debugEnabled) {
+        console.log("[easy-floorplan:area] _coupleRectAreaSharedEdges hit", JSON.stringify({
+          primaryId,
+          otherId: other.id,
+          delta,
+          primaryPoints,
+          otherPoints,
+        }));
+      }
+    }
+
+    const result = {
+      areas: areas.map((a) => {
+        if (a.id === primaryId) return { ...a, points: primaryPoints };
+        const next = updated.get(a.id);
+        return next ? { ...a, points: next } : a;
+      }),
+      coupledIds,
+    };
+
+    if (debugEnabled) {
+      console.log("[easy-floorplan:area] _coupleRectAreaSharedEdges end", JSON.stringify({
+        primaryId,
+        coupledIds: [...coupledIds],
+        result,
+      }));
+    }
+
+    return result;
+  }
+
   private _applyDrag(p: DragMove): void {
     const drag = this._drag!;
     // First *effective* movement: snapshot for undo now, not at pointerdown,
@@ -1755,13 +1844,11 @@ export class FloorplanCardEditor extends LitElement {
     if (drag.primary.kind === "area" && drag.areaVertex != null) {
       const idx = drag.areaVertex;
       const target = this._snapAreaPoint(p.x, p.y, { areaId: drag.primary.id, vertexIndex: idx });
-      const areas = (f.areas ?? []).map((a) => {
-        if (a.id !== drag.primary.id) return a;
-        const points = a.points.map((pt, i) => (i === idx ? target : pt));
-        const otherAreas = (f.areas ?? []).filter((b) => b.id !== drag.primary.id);
-        return { ...a, points: rectAreaClamp(points, otherAreas, { dx: target.x - a.points[idx]!.x, dy: target.y - a.points[idx]!.y }) };
-      });
-      this._emitFloor({ areas });
+      const moving = (f.areas ?? []).find((a) => a.id === drag.primary.id)!;
+      let points = moving.points.map((pt, i) => (i === idx ? target : pt));
+      const delta = { dx: target.x - moving.points[idx]!.x, dy: target.y - moving.points[idx]!.y };
+      const coupled = this._coupleRectAreaSharedEdges(drag.primary.id, points, delta, f.areas ?? []);
+      this._emitFloor({ areas: coupled.areas });
       return;
     }
 
@@ -1770,17 +1857,35 @@ export class FloorplanCardEditor extends LitElement {
     // whole shape.
     if (drag.primary.kind === "area" && drag.areaEdge != null) {
       const idx = drag.areaEdge;
-      const target = this._snapAreaPoint(p.x, p.y, { areaId: drag.primary.id, vertexIndex: idx });
-      const areas = (f.areas ?? []).map((a) => {
-        if (a.id !== drag.primary.id) return a;
-        const points = rectAreaEdgeResize(a.points, idx, target);
-        const otherAreas = (f.areas ?? []).filter((b) => b.id !== drag.primary.id);
-        const edgeStart = a.points[idx % 4] ?? a.points[0]!;
-        const dx = target.x - edgeStart.x;
-        const dy = target.y - edgeStart.y;
-        return { ...a, points: rectAreaClamp(points, otherAreas, { dx, dy }) };
+      const target = { x: this._snap(p.x), y: this._snap(p.y) };
+      const moving = (f.areas ?? []).find((a) => a.id === drag.primary.id)!;
+      let points = rectAreaEdgeResize(moving.points, idx, target);
+      const edgeStart = moving.points[idx % 4]!;
+      const edgeEnd = moving.points[(idx + 1) % 4]!;
+      const horizontal = Math.abs(edgeStart.y - edgeEnd.y) < 0.001;
+      const movedEdgeStart = points[idx % 4]!;
+      const delta = horizontal
+        ? { dx: 0, dy: movedEdgeStart.y - edgeStart.y }
+        : { dx: movedEdgeStart.x - edgeStart.x, dy: 0 };
+
+      // The coupling helper applies delta to the live room. Passing points
+      // here would apply the same edge movement twice and make the shared
+      // boundary drift between pointer frames.
+      const coupled = this._coupleRectAreaSharedEdges(drag.primary.id, moving.points, delta, f.areas ?? []);
+      const uncoupled = (coupled.areas ?? []).filter(
+        (a) => a.id !== drag.primary.id && !coupled.coupledIds.has(a.id)
+      );
+      const sharedPoints = coupled.coupledIds.size
+        ? coupled.areas.find((a) => a.id === drag.primary.id)?.points ?? points
+        : points;
+      points = rectAreaClamp(
+        sharedPoints,
+        uncoupled,
+        delta
+      );
+      this._emitFloor({
+        areas: coupled.areas.map((a) => (a.id === drag.primary.id ? { ...a, points } : a)),
       });
-      this._emitFloor({ areas });
       return;
     }
 
@@ -4532,6 +4637,10 @@ export class FloorplanCardEditor extends LitElement {
     const selected = this._isSel("area", a.id);
     const scoping = a.id === scopingId;
     const pts = a.points.map((p) => `${p.x},${p.y}`).join(" ");
+    const sharedSides = (this._floor().areas ?? [])
+      .filter((other) => other.id !== a.id)
+      .flatMap((other) => rectAreaSharedSides(a.points, other.points).map((side) => ({ side, otherId: other.id })))
+      .filter(({ otherId }) => a.id.localeCompare(otherId) < 0);
     return svg`
       <g class="area-hit ${selected ? "selected" : ""} ${scoping ? "scoping" : ""}">
         ${scoping ? svg`<polygon points=${pts} class="area-scoping" />` : nothing}
@@ -4539,6 +4648,18 @@ export class FloorplanCardEditor extends LitElement {
         <polygon points=${pts} class="area-hit-shape"
                  @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "area", id: a.id })} />
         ${selected ? svg`<polygon points=${pts} class="area-outline" />` : nothing}
+        ${sharedSides.map(({ side }) => {
+          const index = ["top", "right", "bottom", "left"].indexOf(side);
+          const start = a.points[index]!;
+          const end = a.points[(index + 1) % a.points.length]!;
+          const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+          const s = 8;
+          const d =
+            side === "top" || side === "bottom"
+              ? `M ${mid.x - s} ${mid.y - s} L ${mid.x + s} ${mid.y + s} M ${mid.x - s} ${mid.y + s} L ${mid.x + s} ${mid.y - s}`
+              : `M ${mid.x - s} ${mid.y + s} L ${mid.x + s} ${mid.y - s} M ${mid.x - s} ${mid.y - s} L ${mid.x + s} ${mid.y + s}`;
+          return svg`<path d=${d} class="area-shared-wall" />`;
+        })}
         ${
           // Outline yes, vertex and edge handles no, for a pinned room — same
           // reasoning as the wall's endpoints (issue #191): still visibly
@@ -6822,6 +6943,16 @@ export class FloorplanCardEditor extends LitElement {
       stroke: var(--card-background-color, #fff);
       stroke-width: 1.5;
       cursor: grab;
+    }
+    .area-shared-wall {
+      fill: none;
+      stroke: var(--secondary-text-color, #666);
+      stroke-width: 1;
+      stroke-linecap: round;
+      stroke-dasharray: 3 4;
+      opacity: 0.22;
+      pointer-events: none;
+      vector-effect: non-scaling-stroke;
     }
     .area-edge-hit {
       stroke: transparent;

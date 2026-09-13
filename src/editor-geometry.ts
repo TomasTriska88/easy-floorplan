@@ -8,6 +8,7 @@ import type {
   Wall,
 } from "./types";
 import { polygonCentroid, pointInPolygon, textLabel } from "./render";
+import { stringify } from "querystring";
 
 /** Element kinds addressable by the editor's selection model. */
 export type SelKind = "wall" | "opening" | "item" | "text" | "furniture" | "tracker" | "area";
@@ -151,6 +152,178 @@ export function rectAreaClamp(
     { x: box.maxX, y: box.maxY },
     { x: box.minX, y: box.maxY },
   ];
+}
+
+type AreaDebugWindow = typeof globalThis & {
+  __EASY_FLOORPLAN_DEBUG__?: boolean;
+  easyFloorplanDebug?: {
+    enable: () => void;
+    disable: () => void;
+    toggle: () => boolean;
+    isEnabled: () => boolean;
+  };
+};
+
+const areaDebugWindow = globalThis as AreaDebugWindow;
+const areaDebugEnabled = (() => {
+  if (typeof process !== "undefined") {
+    const envValue = process.env?.EASY_FLOORPLAN_DEBUG;
+    if (envValue === "0" || envValue === "false") return false;
+    if (envValue === "1" || envValue === "true") return true;
+  }
+
+  if (areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ === false) return false;
+  if (areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ === true) return true;
+
+  if (typeof window !== "undefined") {
+    try {
+      const search = new URLSearchParams(window.location.search);
+      const queryValue = search.get("easy-floorplan-debug");
+      if (queryValue === "0" || queryValue === "false") return false;
+      if (queryValue === "1" || queryValue === "true") return true;
+      const saved = window.localStorage.getItem("easy-floorplan-debug");
+      if (saved === "0" || saved === "false") return false;
+      if (saved === "1" || saved === "true") return true;
+    } catch {
+      // Some browsers block storage access in restricted contexts; ignore and continue.
+    }
+  }
+
+  return true;
+})();
+
+const areaDebugSet = (enable: boolean): void => {
+  areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ = enable;
+  if (enable) {
+    console.log("[easy-floorplan:area] debug enabled");
+  }
+};
+
+if (typeof window !== "undefined" && !areaDebugWindow.easyFloorplanDebug) {
+  areaDebugWindow.easyFloorplanDebug = {
+    enable: () => {
+      areaDebugSet(true);
+      try {
+        window.localStorage.setItem("easy-floorplan-debug", "1");
+      } catch {
+        // Ignore storage restrictions.
+      }
+      return undefined;
+    },
+    disable: () => {
+      areaDebugSet(false);
+      try {
+        window.localStorage.setItem("easy-floorplan-debug", "0");
+      } catch {
+        // Ignore storage restrictions.
+      }
+      return undefined;
+    },
+    toggle: () => {
+      const next = !areaDebugWindow.__EASY_FLOORPLAN_DEBUG__;
+      areaDebugSet(next);
+      return next;
+    },
+    isEnabled: () => !!areaDebugWindow.__EASY_FLOORPLAN_DEBUG__,
+  };
+}
+
+if (areaDebugEnabled) {
+  areaDebugSet(true);
+  console.log("[easy-floorplan:area] startup debug banner: default on");
+}
+
+const areaDebugLog = (...args: unknown[]): void => {
+  if (!areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ && !areaDebugEnabled) return;
+  console.log("[easy-floorplan:area]", JSON.stringify(args));
+};
+
+export function rectAreaSharedSides(
+  points: readonly AreaPoint[],
+  other: readonly AreaPoint[],
+  epsilon = 0.001
+): Array<"top" | "right" | "bottom" | "left"> {
+  const box = rectBounds(points);
+  const otherBox = rectBounds(other);
+  const sameY = Math.abs(box.minY - otherBox.minY) < epsilon && Math.abs(box.maxY - otherBox.maxY) < epsilon;
+  const sameX = Math.abs(box.minX - otherBox.minX) < epsilon && Math.abs(box.maxX - otherBox.maxX) < epsilon;
+  const out: Array<"top" | "right" | "bottom" | "left"> = [];
+
+  if (Math.abs(box.maxX - otherBox.minX) < epsilon && sameY) out.push("right");
+  if (Math.abs(box.minX - otherBox.maxX) < epsilon && sameY) out.push("left");
+  if (Math.abs(box.maxY - otherBox.minY) < epsilon && sameX) out.push("bottom");
+  if (Math.abs(box.minY - otherBox.maxY) < epsilon && sameX) out.push("top");
+
+  return out;
+}
+
+export function rectAreaSharedEdgeCouple(
+  points: readonly AreaPoint[],
+  other: readonly AreaPoint[],
+  delta: { dx: number; dy: number }
+): { points: AreaPoint[]; other: AreaPoint[] } | undefined {
+  const box = rectBounds(points);
+  const otherBox = rectBounds(other);
+  const sameY = Math.abs(box.minY - otherBox.minY) < 0.001 && Math.abs(box.maxY - otherBox.maxY) < 0.001;
+  const sameX = Math.abs(box.minX - otherBox.minX) < 0.001 && Math.abs(box.maxX - otherBox.maxX) < 0.001;
+
+  const shareLeft = Math.abs(box.maxX - otherBox.minX) < 0.001 && sameY;
+  const shareRight = Math.abs(box.minX - otherBox.maxX) < 0.001 && sameY;
+  const shareTop = Math.abs(box.maxY - otherBox.minY) < 0.001 && sameX;
+  const shareBottom = Math.abs(box.minY - otherBox.maxY) < 0.001 && sameX;
+
+  areaDebugLog("rectAreaSharedEdgeCouple check", {
+    box,
+    otherBox,
+    delta,
+    sameY,
+    sameX,
+    shareLeft,
+    shareRight,
+    shareTop,
+    shareBottom,
+  });
+
+  if (!shareLeft && !shareRight && !shareTop && !shareBottom) return undefined;
+
+  const next = points.map((p) => ({ ...p }));
+  const coupled = other.map((p) => ({ ...p }));
+
+  if (shareLeft) {
+    const boundary = box.maxX + delta.dx;
+    next[1] = { x: boundary, y: next[1]!.y };
+    next[2] = { x: boundary, y: next[2]!.y };
+    coupled[0] = { x: boundary, y: coupled[0]!.y };
+    coupled[3] = { x: boundary, y: coupled[3]!.y };
+  }
+
+  if (shareRight) {
+    const boundary = box.minX + delta.dx;
+    next[0] = { x: boundary, y: next[0]!.y };
+    next[3] = { x: boundary, y: next[3]!.y };
+    coupled[1] = { x: boundary, y: coupled[1]!.y };
+    coupled[2] = { x: boundary, y: coupled[2]!.y };
+  }
+
+  if (shareTop) {
+    const boundary = box.maxY + delta.dy;
+    next[2] = { x: next[2]!.x, y: boundary };
+    next[3] = { x: next[3]!.x, y: boundary };
+    coupled[0] = { x: coupled[0]!.x, y: boundary };
+    coupled[1] = { x: coupled[1]!.x, y: boundary };
+  }
+
+  if (shareBottom) {
+    const boundary = box.minY + delta.dy;
+    next[0] = { x: next[0]!.x, y: boundary };
+    next[1] = { x: next[1]!.x, y: boundary };
+    coupled[2] = { x: coupled[2]!.x, y: boundary };
+    coupled[3] = { x: coupled[3]!.x, y: boundary };
+  }
+
+  const result = { points: next, other: coupled };
+  areaDebugLog("rectAreaSharedEdgeCouple result", result);
+  return result;
 }
 
 export function rectAreaAutoWallNext(

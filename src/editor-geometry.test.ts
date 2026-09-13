@@ -19,6 +19,8 @@ import {
   rectAreaSideWalls,
   rectAreaAutoWallNext,
   rectAreaClamp,
+  rectAreaSharedEdgeCouple,
+  rectAreaSharedSides,
 } from "./editor-geometry";
 import type { OrigPos } from "./editor-geometry";
 import type { Area, Floor, RenderHass, Wall } from "./types";
@@ -407,6 +409,165 @@ describe("rectAreaClamp", () => {
       { x: 20, y: 10 },
       { x: 0, y: 10 },
     ]);
+  });
+});
+
+describe("rectAreaSharedSides", () => {
+  it("finds the shared side between exactly adjacent rectangles", () => {
+    const left = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const right = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    expect(rectAreaSharedSides(left, right)).toEqual(["right"]);
+    expect(rectAreaSharedSides(right, left)).toEqual(["left"]);
+  });
+
+  it("ignores partial overlap and diagonal touch as a shared edge", () => {
+    const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const overlap = [{ x: 10, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 10 }, { x: 10, y: 10 }];
+    const diagonal = [{ x: 20, y: 5 }, { x: 40, y: 5 }, { x: 40, y: 15 }, { x: 20, y: 15 }];
+    expect(rectAreaSharedSides(a, overlap)).toEqual([]);
+    expect(rectAreaSharedSides(a, diagonal)).toEqual([]);
+  });
+});
+
+describe("rectAreaSharedEdgeCouple", () => {
+  it("keeps two touching rooms aligned when one grows through the shared edge", () => {
+    const left = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const right = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    expect(rectAreaSharedEdgeCouple(left, right, { dx: 10, dy: 0 })).toEqual({
+      points: [
+        { x: 0, y: 0 },
+        { x: 30, y: 0 },
+        { x: 30, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 30, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 10 },
+        { x: 30, y: 10 },
+      ],
+    });
+  });
+
+  it("couples all four edge directions without creating a phantom shared boundary", () => {
+    const top = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const above = [{ x: 0, y: -10 }, { x: 20, y: -10 }, { x: 20, y: 0 }, { x: 0, y: 0 }];
+    expect(rectAreaSharedEdgeCouple(top, above, { dx: 0, dy: -5 })).toEqual({
+      points: [
+        { x: 0, y: -5 },
+        { x: 20, y: -5 },
+        { x: 20, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 0, y: -10 },
+        { x: 20, y: -10 },
+        { x: 20, y: -5 },
+        { x: 0, y: -5 },
+      ],
+    });
+  });
+
+  it("keeps a shared edge coupled when the wall is dragged in either direction", () => {
+    const left = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const right = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    expect(rectAreaSharedEdgeCouple(left, right, { dx: -5, dy: 0 })).toEqual({
+      points: [
+        { x: 0, y: 0 },
+        { x: 15, y: 0 },
+        { x: 15, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 15, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 10 },
+        { x: 15, y: 10 },
+      ],
+    });
+  });
+
+  it("keeps a shared right edge coupled when the room grows or shrinks horizontally", () => {
+    const left = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const right = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+
+    expect(rectAreaSharedEdgeCouple(left, right, { dx: 10, dy: 0 })).toEqual({
+      points: [
+        { x: 0, y: 0 },
+        { x: 30, y: 0 },
+        { x: 30, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 30, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 10 },
+        { x: 30, y: 10 },
+      ],
+    });
+
+    expect(rectAreaSharedEdgeCouple(left, right, { dx: -5, dy: 0 })).toEqual({
+      points: [
+        { x: 0, y: 0 },
+        { x: 15, y: 0 },
+        { x: 15, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 15, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 10 },
+        { x: 15, y: 10 },
+      ],
+    });
+  });
+
+  it("keeps a shared top edge coupled when the room grows or shrinks vertically", () => {
+    const top = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const above = [{ x: 0, y: -10 }, { x: 20, y: -10 }, { x: 20, y: 0 }, { x: 0, y: 0 }];
+
+    expect(rectAreaSharedEdgeCouple(top, above, { dx: 0, dy: -5 })).toEqual({
+      points: [
+        { x: 0, y: -5 },
+        { x: 20, y: -5 },
+        { x: 20, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 0, y: -10 },
+        { x: 20, y: -10 },
+        { x: 20, y: -5 },
+        { x: 0, y: -5 },
+      ],
+    });
+
+    expect(rectAreaSharedEdgeCouple(top, above, { dx: 0, dy: 5 })).toEqual({
+      points: [
+        { x: 0, y: 5 },
+        { x: 20, y: 5 },
+        { x: 20, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 0, y: -10 },
+        { x: 20, y: -10 },
+        { x: 20, y: 5 },
+        { x: 0, y: 5 },
+      ],
+    });
+  });
+
+  it("returns undefined when rectangles are merely nearby but not sharing an edge", () => {
+    const a = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    const b = [{ x: 20, y: 5 }, { x: 30, y: 5 }, { x: 30, y: 15 }, { x: 20, y: 15 }];
+    expect(rectAreaSharedEdgeCouple(a, b, { dx: 5, dy: 0 })).toBeUndefined();
+    expect(rectAreaSharedEdgeCouple(a, b, { dx: 0, dy: 5 })).toBeUndefined();
+  });
+
+  it("does not couple rectangles that only share part of a side", () => {
+    const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const partial = [{ x: 20, y: 5 }, { x: 40, y: 5 }, { x: 40, y: 15 }, { x: 20, y: 15 }];
+    expect(rectAreaSharedEdgeCouple(a, partial, { dx: 5, dy: 0 })).toBeUndefined();
   });
 });
 
