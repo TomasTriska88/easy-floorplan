@@ -409,6 +409,8 @@ export class FloorplanCardEditor extends LitElement {
   /** The switcher's own drag (issue #281); see `_renderSwitcherHandle`. */
   @state() private _switcherDrag?: {
     pointerId: number;
+    /** The handle that took capture — the listeners' `currentTarget` is the root. */
+    handle: Element;
     moved: boolean;
     /** Where the pointer went down, so a click can be told from a drag. */
     at: { x: number; y: number };
@@ -544,12 +546,29 @@ export class FloorplanCardEditor extends LitElement {
     // overlays had their chance to absorb the key (see _onHostKeyDown).
     this.addEventListener("keydown", this._onHostKeyDown);
     window.addEventListener("focusin", this._onFocusIn);
+    // The floor-switcher drag owns its pointer here rather than on the handle
+    // (issue #281). Capture is best-effort — `_capturePointer` swallows the
+    // failure — and without it every event lands on whatever the cursor is
+    // over: the SVG, an item badge, a text label, each with handlers of its
+    // own that know nothing about this drag and clear `_gesturePointer` on
+    // release, stranding the handle. Patching the targets one at a time
+    // misses the next one. The shadow root is an ancestor of all of them, and
+    // in the capture phase it sees each event before any target does, so the
+    // drag is finished the same way whichever element the pointer is over.
+    const root = this.renderRoot as EventTarget;
+    root.addEventListener("pointermove", this._onSwitcherMove as EventListener, true);
+    root.addEventListener("pointerup", this._onSwitcherUp as EventListener, true);
+    root.addEventListener("pointercancel", this._onSwitcherCancel as EventListener, true);
   }
 
   public disconnectedCallback(): void {
     window.removeEventListener("keydown", this._onKeyDown, true);
     this.removeEventListener("keydown", this._onHostKeyDown);
     window.removeEventListener("focusin", this._onFocusIn);
+    const root = this.renderRoot as EventTarget;
+    root.removeEventListener("pointermove", this._onSwitcherMove as EventListener, true);
+    root.removeEventListener("pointerup", this._onSwitcherUp as EventListener, true);
+    root.removeEventListener("pointercancel", this._onSwitcherCancel as EventListener, true);
     if (this._applyResetTimer !== null) clearTimeout(this._applyResetTimer);
     // HA's dialog reparents the editor, so this can land mid-drag. Removal
     // takes the pointer capture with it, so the gesture is over either way:
@@ -1420,22 +1439,12 @@ export class FloorplanCardEditor extends LitElement {
 
   private _onCanvasMove(ev: PointerEvent): void {
     if (this._foreignPointer(ev)) return;
-    // A switcher drag whose pointer capture never took (capture is best-effort
-    // — see `_capturePointer`) reports here the moment the cursor leaves the
-    // handle. Without this the generic canvas handling below ignores the drag
-    // outright, and `_onCanvasUp` then clears `_gesturePointer` without ever
-    // finishing it: the handle sticks to the pointer with no way to let go,
-    // and the move is never emitted.
-    if (this._switcherDrag?.pointerId === ev.pointerId) {
-      this._onSwitcherMove(ev);
-      return;
-    }
     // A gesture with no buttons held means pointerup never reached us
     // (alt-tab, dialog retarget) — treat it as canceled instead of letting
     // the element chase the hovering mouse.
     if (
       ev.buttons === 0 &&
-      (this._drag || this._draft || this._draftTracker || this._marquee || this._switcherDrag)
+      (this._drag || this._draft || this._draftTracker || this._marquee)
     ) {
       this._cancelGesture();
       return;
@@ -1470,14 +1479,6 @@ export class FloorplanCardEditor extends LitElement {
 
   private _onCanvasUp(ev: PointerEvent): void {
     if (this._foreignPointer(ev)) return;
-    // The release half of the uncaptured switcher drag above. It has to come
-    // before `_gesturePointer` is cleared: `_onSwitcherUp` is what emits the
-    // move, and once the gate is open a second gesture can start on top of a
-    // drag that was never finished.
-    if (this._switcherDrag?.pointerId === ev.pointerId) {
-      this._onSwitcherUp(ev);
-      return;
-    }
     // Land on the last position the pointer reported, not on whatever the
     // previous frame caught — settle while _drag is still set.
     this._dragMoves.settle();
@@ -4672,9 +4673,6 @@ export class FloorplanCardEditor extends LitElement {
           ? "Drag to move the floor switcher"
           : "Drag to move the floor switcher off the corner"}
         @pointerdown=${this._onSwitcherDown}
-        @pointermove=${this._onSwitcherMove}
-        @pointerup=${this._onSwitcherUp}
-        @pointercancel=${this._onSwitcherCancel}
         @lostpointercapture=${this._onSwitcherCancel}
       >
         ${floors.map(
@@ -4714,6 +4712,7 @@ export class FloorplanCardEditor extends LitElement {
     // re-targeted event can easily be.
     this._switcherDrag = {
       pointerId: ev.pointerId,
+      handle,
       moved: false,
       at: this._toVirtual(ev, false),
       before: this._config,
@@ -4763,8 +4762,10 @@ export class FloorplanCardEditor extends LitElement {
   private _onSwitcherUp = (ev: PointerEvent): void => {
     const d = this._switcherDrag;
     if (!d || d.pointerId !== ev.pointerId) return;
+    // Stopped here, in the capture phase, so no target underneath — the canvas,
+    // a badge — also treats this release as the end of a gesture of its own.
     ev.stopPropagation();
-    this._releasePointer(ev, ev.currentTarget as Element);
+    this._releasePointer(ev, d.handle);
     // Land on the last position the pointer reported rather than whatever the
     // previous frame caught — and while `_switcherDrag` is still set, since
     // that is what the coalescer checks before applying.
@@ -4794,7 +4795,7 @@ export class FloorplanCardEditor extends LitElement {
     const d = this._switcherDrag;
     if (!d || d.pointerId !== ev.pointerId) return;
     ev.stopPropagation();
-    this._releasePointer(ev, ev.currentTarget as Element);
+    this._releasePointer(ev, d.handle);
     this._rollBackSwitcherDrag();
   };
 
@@ -5261,9 +5262,12 @@ export class FloorplanCardEditor extends LitElement {
                      fractional, and a field that showed 12 for a stored 12.4
                      would be lying about where the switcher is — then rewrite
                      it to 13 the moment anyone touched the spinner. These are
-                     meant to be the precise way to place it. -->
+                     meant to be the precise way to place it. Hence step="any"
+                     as well: a number input defaults to whole steps, which
+                     marks a stored 60.4 invalid and lets the spinner snap it. -->
                 <input
                   type="number"
+                  step="any"
                   aria-label="Floor switcher X, in canvas units"
                   .value=${at ? String(at.x) : ""}
                   placeholder=${Math.round(switcherHandleHome(w, h).x)}
@@ -5272,6 +5276,7 @@ export class FloorplanCardEditor extends LitElement {
                 <label aria-hidden="true">Y</label>
                 <input
                   type="number"
+                  step="any"
                   aria-label="Floor switcher Y, in canvas units"
                   .value=${at ? String(at.y) : ""}
                   placeholder=${Math.round(switcherHandleHome(w, h).y)}

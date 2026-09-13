@@ -426,6 +426,17 @@ describe("the coordinate fields are a real way to place it", () => {
     expect(t.emitted[t.emitted.length - 1]?.floorSwitcher).toEqual({ x: 60.4, y: 40 });
   });
 
+  it("keeps a fractional anchor valid rather than a step mismatch", async () => {
+    // A number input steps in whole units unless told otherwise, so a stored
+    // 60.4 fails the field's own validity check and the native spinner snaps
+    // it to a whole number — undoing the precision the fields are here for.
+    const t = await mountEditor({ floorSwitcher: { x: 60.4, y: 100.25 } });
+    const [x, y] = await openSwitcherPanel(t.ed);
+    expect(x.validity.stepMismatch).toBe(false);
+    expect(y.validity.stepMismatch).toBe(false);
+    expect(x.validity.valid && y.validity.valid).toBe(true);
+  });
+
   it("takes a negative coordinate, which is off-canvas margin", async () => {
     const t = await mountEditor({ floorSwitcher: { x: 60, y: 100 } });
     const [x] = await openSwitcherPanel(t.ed);
@@ -557,6 +568,42 @@ describe("the editor lets you drag the switcher anywhere on the canvas", () => {
     expect(
       (t.ed as unknown as { _gesturePointer: number | null })._gesturePointer,
     ).toBeNull();
+  });
+
+  it("finishes when the pointer crosses other elements without capture", async () => {
+    // Without capture, events land on whatever the cursor is over. Item badges
+    // and text labels have pointer handlers of their own — and theirs clear
+    // the gesture gate on release without knowing this drag exists, which left
+    // the handle live with the move never emitted.
+    const t = await mountEditor();
+    const cfg = structuredClone(
+      (t.ed as unknown as { _config: FloorplanCardConfig })._config,
+    );
+    const floor = (cfg.floors as unknown as { items: unknown[]; texts: unknown[] }[])[0];
+    floor.items = [{ id: "i1", kind: "light", x: 300, y: 60 }];
+    floor.texts = [{ id: "t1", x: 80, y: 160, text: "Hall" }];
+    t.ed.setConfig(cfg);
+    await t.ed.updateComplete;
+    const root = t.ed.shadowRoot!;
+    const badge = root.querySelector(".edit-item") as HTMLElement;
+    const label = root.querySelector(".edit-text") as HTMLElement;
+    expect(badge).not.toBeNull();
+    expect(label).not.toBeNull();
+
+    t.handle().dispatchEvent(t.ptr("pointerdown", t.handleCentre()));
+    badge.dispatchEvent(t.ptr("pointermove", t.canvasPoint(120, 160)));
+    await t.frame();
+    label.dispatchEvent(t.ptr("pointerup", t.canvasPoint(120, 160), 0));
+    await t.ed.updateComplete;
+
+    expect(t.emitted[t.emitted.length - 1]?.floorSwitcher).toEqual({ x: 120, y: 160 });
+    const state = t.ed as unknown as { _switcherDrag?: unknown; _gesturePointer: number | null };
+    expect(state._switcherDrag).toBeUndefined();
+    expect(state._gesturePointer).toBeNull();
+    // Neither element treated the events as a gesture of its own.
+    const after = (t.ed as unknown as { _config: FloorplanCardConfig })._config;
+    const f0 = (after.floors as unknown as { items: { x: number }[] }[])[0];
+    expect(f0.items[0].x).toBe(300);
   });
 
   it("applies one move a frame, not one an event", async () => {
