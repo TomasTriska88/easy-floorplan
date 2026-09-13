@@ -50,6 +50,7 @@ screen size.
 <img width="444" height="313" alt="night" src="https://github.com/user-attachments/assets/1590b710-d88f-4a34-986b-b08640a45f4c" />
 
 
+- 🛋️ **Furniture that does something** 🆕 — tap, hold and double-tap actions on any piece, the same ones a room has. A staircase can keep changing floor on tap and open more-info on hold. See [Actions on furniture](https://github.com/nicosandller/easy-floorplan/blob/main/docs/behavior.md#actions-on-furniture).
 - 🧭 **Put the floor switcher anywhere** 🆕 — the floor buttons were pinned to the top-right corner, which on a dense plan sits over the drawing. Drag them onto whatever part of your plan is empty; the position is in canvas units, so it holds at any card size. See [Where the floor switcher sits](https://github.com/nicosandller/easy-floorplan/blob/main/docs/appearance.md#where-the-floor-switcher-sits).
 - 🏢 **Multiple floors** — per-floor elements with a switcher in both the editor and the card. Give a staircase `goToFloor: up` and clicking it takes you there.
 - 🖼️ **Background image** — trace over a floor-plan scan, per floor, with adjustable opacity.
@@ -450,7 +451,7 @@ Everything the card does beyond placing elements, in four guides:
 | | | |
 | --- | --- | --- |
 | ⚙️ | **[Configuration](https://github.com/nicosandller/easy-floorplan/blob/main/docs/configuration.md)** | Every key it accepts — per-element tables, defaults, a worked example |
-| 💡 | **[Lighting](https://github.com/nicosandller/easy-floorplan/blob/main/docs/lighting.md)** | Sun dimming through dusk and dawn · real sunlight through the windows |
+| 💡 | **[Lighting](https://github.com/nicosandller/easy-floorplan/blob/main/docs/lighting.md)** | Sun dimming through dusk and dawn · real sunlight through the windows · diffuse ambient daylight |
 | 🎨 | **[Appearance](https://github.com/nicosandller/easy-floorplan/blob/main/docs/appearance.md)** | Skins · overlay scale · compact header · rotation · card-mod hooks |
 | ⚡ | **[Behaviour](https://github.com/nicosandller/easy-floorplan/blob/main/docs/behavior.md)** | Dead spaces · doors on locks · room actions · devices that only appear up close · stairs between floors · offline devices · hiding logic |
 

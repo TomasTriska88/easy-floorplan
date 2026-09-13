@@ -257,17 +257,26 @@ export interface Opening {
    * exception: a glass-brick panel, a hatch, a serving window with a solid
    * flap, all of which admit light only as far as they are open.
    *
-   * Only the sunlight reads this — it changes nothing about how the opening
-   * is drawn. See {@link openingIsGlazed}.
+   * Only the light reads this — it changes nothing about how the opening is
+   * drawn. All three layers ask the same question through the same helper:
+   * direct sunlight, a lamp's pool, and diffuse
+   * {@link FloorplanCardConfig.ambientDaylight}. See {@link openingIsGlazed},
+   * and {@link openingGlassIsClear} for the roll-motion exception they share.
    */
   glazed?: boolean;
   /**
-   * Whether this opening takes part in the sunlight at all (default `true`).
+   * Whether this opening takes part in the **natural** light at all (default
+   * `true`).
    *
-   * `false` makes it wall as far as the sun is concerned: no patch of its own,
-   * and it stops a beam crossing it like any other stretch of wall. Nothing
-   * else changes — it is still drawn, still tappable, still lets a lamp's pool
-   * through if it is open.
+   * `false` makes it wall as far as the sky is concerned: no patch of its own,
+   * and it stops a beam crossing it like any other stretch of wall. Both
+   * outdoor layers read it — direct {@link FloorplanCardConfig.sunlight} and
+   * diffuse {@link FloorplanCardConfig.ambientDaylight} — because a door the
+   * sun cannot get through is not one the sky gets through either, and one
+   * flag saying "shut to the outside" beats two that have to agree.
+   *
+   * Indoors nothing changes: it is still drawn, still tappable, and still lets
+   * a lamp's pool through if it is open.
    *
    * The case it exists for (issue #177): a **solid front door with no sensor
    * bound**. The plan draws such a door open, because that is the floor-plan
@@ -996,10 +1005,27 @@ export interface Furniture {
    */
   goToFloor?: "up" | "down";
   /**
+   * What a gesture on this piece does (issue #284): "I would like the option to
+   * select either a floor or the tap actions like we have for areas."
+   *
+   * Same shape as {@link Area.tap_action}, and the same relationship to the
+   * behaviour the piece already had. {@link goToFloor} is to furniture what the
+   * zoom is to a room: the thing a tap does when nothing else is configured. A
+   * `tap_action` replaces it; hold and double-tap are free either way, so a
+   * staircase can keep changing floor on tap and still open more-info on hold.
+   *
+   * An action with no `entity` of its own falls back to this piece's
+   * {@link entity}, exactly as a room's does — so binding a cabinet's contact
+   * sensor once is enough for `more-info` to know what to show.
+   */
+  tap_action?: ActionConfig;
+  hold_action?: ActionConfig;
+  double_tap_action?: ActionConfig;
+  /**
    * Optional entity that makes the drawing live (issue #82) — a soil sensor on
    * a plant, a water temperature sensor on a fish tank, a contact sensor on a
-   * cabinet. Drives {@link stateColor} and {@link activeColor}; furniture has
-   * no click action, so an unbound piece is still just a gray diagram.
+   * cabinet. Drives {@link stateColor} and {@link activeColor}, and stands in
+   * as the target for any action that names none of its own (issue #284).
    */
   entity?: string;
   /**
@@ -1690,6 +1716,16 @@ export interface FloorplanCardConfig extends LovelaceCardConfig {
   sunBrightnessMin?: number;
   /** Plan brightness in full daylight, 0-1. Default {@link DEFAULT_SUN_MAX}. */
   sunBrightnessMax?: number;
+  /**
+   * Paint soft diffuse daylight from the visible sky through exterior openings.
+   * This is deliberately independent of direct {@link sunlight}: a north-facing
+   * window can brighten its room even when no direct sun ray reaches that wall.
+   *
+   * V1 derives exterior openings from Area adjacency and clips each wash to its
+   * Area polygon, so complete room Areas are required for reliable topology.
+   * Off by default for backward compatibility.
+   */
+  ambientDaylight?: boolean;
   /**
    * Let the sun in (issue: sunlight through openings). Light arrives from
    * {@link sunBearing}, enters through every window and every open door, and
