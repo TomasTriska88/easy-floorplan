@@ -606,6 +606,69 @@ describe("the editor lets you drag the switcher anywhere on the canvas", () => {
     expect(f0.items[0].x).toBe(300);
   });
 
+  it("does not leave a touch drag counted as a pinch finger", async () => {
+    // `.canvas-wrap` counts every touch that lands for pinch-zoom, and only its
+    // own end handler uncounts one. The drag stops its events before they get
+    // there, so a finger that dragged the switcher stayed counted — and the
+    // next single touch read as a second finger and started a pinch.
+    const t = await mountEditor();
+    const touch = (type: string, at: { x: number; y: number }, id: number, buttons = 1) =>
+      new PointerEvent(type, {
+        pointerId: id,
+        pointerType: "touch",
+        clientX: at.x,
+        clientY: at.y,
+        buttons,
+        bubbles: true,
+        cancelable: true,
+      });
+    const pinch = t.ed as unknown as { _pinchPts: Map<number, unknown>; _pinch: unknown };
+
+    t.handle().dispatchEvent(touch("pointerdown", t.handleCentre(), 7));
+    // The finger is counted on the way down, as every touch on the canvas is.
+    expect(pinch._pinchPts.has(7)).toBe(true);
+    t.handle().dispatchEvent(touch("pointermove", t.canvasPoint(120, 160), 7));
+    await t.frame();
+    t.handle().dispatchEvent(touch("pointerup", t.canvasPoint(120, 160), 7, 0));
+    await t.ed.updateComplete;
+    expect(t.emitted[t.emitted.length - 1]?.floorSwitcher).toEqual({ x: 120, y: 160 });
+    expect(pinch._pinchPts.size).toBe(0);
+
+    // One new finger is one finger, not the second half of a pinch.
+    t.svg().dispatchEvent(touch("pointerdown", t.canvasPoint(200, 100), 8));
+    expect(pinch._pinch).toBeNull();
+    t.svg().dispatchEvent(touch("pointerup", t.canvasPoint(200, 100), 8, 0));
+
+    // And a canceled touch drag is forgotten the same way.
+    t.handle().dispatchEvent(touch("pointerdown", t.handleCentre(), 9));
+    t.handle().dispatchEvent(touch("pointermove", t.canvasPoint(60, 40), 9));
+    t.handle().dispatchEvent(touch("pointercancel", t.canvasPoint(60, 40), 9, 0));
+    expect(pinch._pinchPts.size).toBe(0);
+  });
+
+  it("drops the switcher where the pointer was released, not where it last moved", async () => {
+    // Moves are coalesced, and a release can report a point no move did.
+    const t = await mountEditor();
+    const h = t.handle();
+    h.dispatchEvent(t.ptr("pointerdown", t.handleCentre()));
+    h.dispatchEvent(t.ptr("pointermove", t.canvasPoint(100, 60)));
+    await t.frame();
+    h.dispatchEvent(t.ptr("pointerup", t.canvasPoint(200, 100), 0));
+    await t.ed.updateComplete;
+    expect(t.emitted[t.emitted.length - 1]?.floorSwitcher).toEqual({ x: 200, y: 100 });
+  });
+
+  it("still treats a press that never passed the slop as a click, wherever it lifts", async () => {
+    // The release point only counts once the drag has actually moved; before
+    // that a press is a click, and a click places nothing.
+    const t = await mountEditor();
+    const h = t.handle();
+    h.dispatchEvent(t.ptr("pointerdown", t.handleCentre()));
+    h.dispatchEvent(t.ptr("pointerup", t.canvasPoint(200, 100), 0));
+    await t.ed.updateComplete;
+    expect(t.emitted).toEqual([]);
+  });
+
   it("applies one move a frame, not one an event", async () => {
     // `_config` is reactive, so writing it per raw pointermove re-renders the
     // whole editor at pointer rate and the handle falls behind the cursor.

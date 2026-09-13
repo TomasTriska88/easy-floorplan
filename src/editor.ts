@@ -4730,6 +4730,7 @@ export class FloorplanCardEditor extends LitElement {
     // dialog taking the pointer). The other drags treat that as a cancel
     // rather than letting the element chase the hovering cursor.
     if (ev.buttons === 0) {
+      this._forgetSwitcherTouch(ev);
       this._cancelGesture();
       return;
     }
@@ -4765,10 +4766,15 @@ export class FloorplanCardEditor extends LitElement {
     // Stopped here, in the capture phase, so no target underneath — the canvas,
     // a badge — also treats this release as the end of a gesture of its own.
     ev.stopPropagation();
+    this._forgetSwitcherTouch(ev);
     this._releasePointer(ev, d.handle);
-    // Land on the last position the pointer reported rather than whatever the
-    // previous frame caught — and while `_switcherDrag` is still set, since
-    // that is what the coalescer checks before applying.
+    // Land where the pointer was actually released. The last `pointermove` is
+    // not a safe stand-in: moves are coalesced, and a release can report a
+    // point no move ever did, so settling the queue alone would drop the
+    // switcher short of where it was let go. Only once the drag has moved —
+    // a press that never passed the slop is a click, and still places nothing.
+    // Settled while `_switcherDrag` is set, since the coalescer checks it.
+    if (d.moved) this._switcherMoves.push(this._toVirtual(ev));
     this._switcherMoves.settle();
     this._switcherDrag = undefined;
     this._gesturePointer = null;
@@ -4795,9 +4801,25 @@ export class FloorplanCardEditor extends LitElement {
     const d = this._switcherDrag;
     if (!d || d.pointerId !== ev.pointerId) return;
     ev.stopPropagation();
+    this._forgetSwitcherTouch(ev);
     this._releasePointer(ev, d.handle);
     this._rollBackSwitcherDrag();
   };
+
+  /**
+   * Take the drag's finger out of the pinch bookkeeping.
+   *
+   * `_onWrapPointerDown` counts every touch that lands on the canvas, the
+   * switcher's included, and only `_onWrapPointerEnd` takes it out again. The
+   * drag's own listeners run first — on the shadow root, above `.canvas-wrap`
+   * — and stop the event, so that end handler never hears this finger lift.
+   * Left counted, the next single touch reads as a second finger and starts a
+   * pinch nobody is making. Called on every path that ends the drag's pointer,
+   * before the event is stopped from reaching the wrap.
+   */
+  private _forgetSwitcherTouch(ev: PointerEvent): void {
+    this._onWrapPointerEnd(ev);
+  }
 
   /**
    * Put the config back as it was before the switcher drag started.
