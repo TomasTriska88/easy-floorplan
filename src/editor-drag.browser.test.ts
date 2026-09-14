@@ -421,4 +421,231 @@ describe("editor drag", () => {
     expect(areas[1].points[0].x).toBeCloseTo(areas[1].points[3].x, 6);
     document.body.innerHTML = "";
   });
+
+  it("pushes a long shared edge against two shorter rooms without separating them", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "long",
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 300 },
+                { x: 100, y: 300 },
+              ],
+            },
+            {
+              id: "upper",
+              points: [
+                { x: 200, y: 100 },
+                { x: 300, y: 100 },
+                { x: 300, y: 200 },
+                { x: 200, y: 200 },
+              ],
+            },
+            {
+              id: "lower",
+              points: [
+                { x: 200, y: 200 },
+                { x: 300, y: 200 },
+                { x: 300, y: 300 },
+                { x: 200, y: 300 },
+              ],
+            },
+            {
+              id: "far",
+              points: [
+                { x: 300, y: 120 },
+                { x: 380, y: 120 },
+                { x: 380, y: 260 },
+                { x: 300, y: 260 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "long" }];
+    await ed.updateComplete;
+
+    const edges = [...ed.shadowRoot!.querySelectorAll<SVGLineElement>(".area-edge-hit")];
+    const rightEdge = edges.find((edge) => edge.getAttribute("x1") === "200" && edge.getAttribute("x2") === "200");
+    expect(rightEdge).toBeTruthy();
+
+    const from = center(rightEdge!);
+    pointer(rightEdge!, "pointerdown", from.x, from.y);
+    pointer(rightEdge!, "pointermove", from.x + 30, from.y);
+    await frame();
+    await ed.updateComplete;
+    pointer(rightEdge!, "pointerup", from.x + 30, from.y);
+    await ed.updateComplete;
+
+    const areas = (ed as any)._floor().areas;
+    expect(areas[0].points[1].x).toBeGreaterThan(200);
+    expect(areas[0].points[1].x).toBeCloseTo(areas[1].points[0].x, 6);
+    expect(areas[0].points[2].x).toBeCloseTo(areas[2].points[3].x, 6);
+    expect(areas[1].points[1].x).toBe(300);
+    expect(areas[2].points[2].x).toBe(300);
+    expect(areas[3].points[0].x).toBe(300);
+    document.body.innerHTML = "";
+  });
+
+  it("resizes an unrelated edge without coupling a perpendicular neighbor", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "room",
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 200 },
+                { x: 100, y: 200 },
+              ],
+            },
+            {
+              id: "neighbor",
+              points: [
+                { x: 200, y: 100 },
+                { x: 300, y: 100 },
+                { x: 300, y: 200 },
+                { x: 200, y: 200 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "room" }];
+    await ed.updateComplete;
+
+    const edges = [...ed.shadowRoot!.querySelectorAll<SVGLineElement>(".area-edge-hit")];
+    const topEdge = edges.find(
+      (edge) => edge.getAttribute("x1") === "100" && edge.getAttribute("x2") === "200" && edge.getAttribute("y1") === "100"
+    );
+    expect(topEdge).toBeTruthy();
+
+    const from = center(topEdge!);
+    pointer(topEdge!, "pointerdown", from.x, from.y);
+    pointer(topEdge!, "pointermove", from.x, from.y - 20);
+    await frame();
+    await ed.updateComplete;
+    pointer(topEdge!, "pointerup", from.x, from.y - 20);
+    await ed.updateComplete;
+
+    const areas = (ed as any)._floor().areas;
+    expect(areas[0].points[0].y).toBeLessThan(100);
+    expect(areas[0].points[1].y).toBeLessThan(100);
+    expect(areas[1].points).toEqual([
+      { x: 200, y: 100 },
+      { x: 300, y: 100 },
+      { x: 300, y: 200 },
+      { x: 200, y: 200 },
+    ]);
+    document.body.innerHTML = "";
+  });
+
+  it("stops a shared-wall group before it overlaps a newly encountered room", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "primary",
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 200 },
+                { x: 100, y: 200 },
+              ],
+            },
+            {
+              id: "shared",
+              points: [
+                { x: 200, y: 100 },
+                { x: 300, y: 100 },
+                { x: 300, y: 150 },
+                { x: 200, y: 150 },
+              ],
+            },
+            {
+              id: "new-obstacle",
+              points: [
+                { x: 250, y: 160 },
+                { x: 280, y: 160 },
+                { x: 280, y: 220 },
+                { x: 250, y: 220 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "primary" }];
+    await ed.updateComplete;
+
+    const edges = [...ed.shadowRoot!.querySelectorAll<SVGLineElement>(".area-edge-hit")];
+    const rightEdge = edges.find((edge) => edge.getAttribute("x1") === "200" && edge.getAttribute("x2") === "200");
+    expect(rightEdge).toBeTruthy();
+
+    const from = center(rightEdge!);
+    pointer(rightEdge!, "pointerdown", from.x, from.y);
+    pointer(rightEdge!, "pointermove", from.x + 80, from.y);
+    await frame();
+    await ed.updateComplete;
+    pointer(rightEdge!, "pointerup", from.x + 80, from.y);
+    await ed.updateComplete;
+
+    const areas = (ed as any)._floor().areas;
+    const primary = areas.find((area: any) => area.id === "primary");
+    const shared = areas.find((area: any) => area.id === "shared");
+    const obstacle = areas.find((area: any) => area.id === "new-obstacle");
+    expect(primary.points[1].x).toBeLessThanOrEqual(250.001);
+    expect(primary.points[2].x).toBeLessThanOrEqual(250.001);
+    expect(shared.points[0].x).toBeCloseTo(primary.points[1].x, 6);
+    expect(shared.points[3].x).toBeCloseTo(primary.points[2].x, 6);
+    expect(obstacle.points).toEqual([
+      { x: 250, y: 160 },
+      { x: 280, y: 160 },
+      { x: 280, y: 220 },
+      { x: 250, y: 220 },
+    ]);
+    document.body.innerHTML = "";
+  });
 });

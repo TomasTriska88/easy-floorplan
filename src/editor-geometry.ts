@@ -8,7 +8,6 @@ import type {
   Wall,
 } from "./types";
 import { polygonCentroid, pointInPolygon, textLabel } from "./render";
-import { stringify } from "querystring";
 
 /** Element kinds addressable by the editor's selection model. */
 export type SelKind = "wall" | "opening" | "item" | "text" | "furniture" | "tracker" | "area";
@@ -245,14 +244,14 @@ export function rectAreaSharedSides(
 ): Array<"top" | "right" | "bottom" | "left"> {
   const box = rectBounds(points);
   const otherBox = rectBounds(other);
-  const sameY = Math.abs(box.minY - otherBox.minY) < epsilon && Math.abs(box.maxY - otherBox.maxY) < epsilon;
-  const sameX = Math.abs(box.minX - otherBox.minX) < epsilon && Math.abs(box.maxX - otherBox.maxX) < epsilon;
+  const overlapY = Math.min(box.maxY, otherBox.maxY) - Math.max(box.minY, otherBox.minY);
+  const overlapX = Math.min(box.maxX, otherBox.maxX) - Math.max(box.minX, otherBox.minX);
   const out: Array<"top" | "right" | "bottom" | "left"> = [];
 
-  if (Math.abs(box.maxX - otherBox.minX) < epsilon && sameY) out.push("right");
-  if (Math.abs(box.minX - otherBox.maxX) < epsilon && sameY) out.push("left");
-  if (Math.abs(box.maxY - otherBox.minY) < epsilon && sameX) out.push("bottom");
-  if (Math.abs(box.minY - otherBox.maxY) < epsilon && sameX) out.push("top");
+  if (Math.abs(box.maxX - otherBox.minX) < epsilon && overlapY > epsilon) out.push("right");
+  if (Math.abs(box.minX - otherBox.maxX) < epsilon && overlapY > epsilon) out.push("left");
+  if (Math.abs(box.maxY - otherBox.minY) < epsilon && overlapX > epsilon) out.push("bottom");
+  if (Math.abs(box.minY - otherBox.maxY) < epsilon && overlapX > epsilon) out.push("top");
 
   return out;
 }
@@ -264,20 +263,24 @@ export function rectAreaSharedEdgeCouple(
 ): { points: AreaPoint[]; other: AreaPoint[] } | undefined {
   const box = rectBounds(points);
   const otherBox = rectBounds(other);
-  const sameY = Math.abs(box.minY - otherBox.minY) < 0.001 && Math.abs(box.maxY - otherBox.maxY) < 0.001;
-  const sameX = Math.abs(box.minX - otherBox.minX) < 0.001 && Math.abs(box.maxX - otherBox.maxX) < 0.001;
+  const overlapY = Math.min(box.maxY, otherBox.maxY) - Math.max(box.minY, otherBox.minY);
+  const overlapX = Math.min(box.maxX, otherBox.maxX) - Math.max(box.minX, otherBox.minX);
 
-  const shareLeft = Math.abs(box.maxX - otherBox.minX) < 0.001 && sameY;
-  const shareRight = Math.abs(box.minX - otherBox.maxX) < 0.001 && sameY;
-  const shareTop = Math.abs(box.maxY - otherBox.minY) < 0.001 && sameX;
-  const shareBottom = Math.abs(box.minY - otherBox.maxY) < 0.001 && sameX;
+  const movingHorizontally = Math.abs(delta.dx) > 0.001;
+  const movingVertically = Math.abs(delta.dy) > 0.001;
+  const shareLeft = Math.abs(box.maxX - otherBox.minX) < 0.001 && overlapY > 0.001 && movingHorizontally;
+  const shareRight = Math.abs(box.minX - otherBox.maxX) < 0.001 && overlapY > 0.001 && movingHorizontally;
+  const shareTop = Math.abs(box.maxY - otherBox.minY) < 0.001 && overlapX > 0.001 && movingVertically;
+  const shareBottom = Math.abs(box.minY - otherBox.maxY) < 0.001 && overlapX > 0.001 && movingVertically;
 
   areaDebugLog("rectAreaSharedEdgeCouple check", {
     box,
     otherBox,
     delta,
-    sameY,
-    sameX,
+    overlapY,
+    overlapX,
+    movingHorizontally,
+    movingVertically,
     shareLeft,
     shareRight,
     shareTop,

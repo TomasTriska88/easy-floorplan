@@ -1716,6 +1716,7 @@ export class FloorplanCardEditor extends LitElement {
     areas: readonly Area[]
   ): { areas: Area[]; coupledIds: Set<string> } {
     let primaryPoints = points;
+    const sharedReference = points;
     const updated = new Map<string, AreaPoint[]>();
     const coupledIds = new Set<string>();
 
@@ -1754,7 +1755,10 @@ export class FloorplanCardEditor extends LitElement {
     for (const other of areas) {
       if (other.id === primaryId) continue;
       const otherPoints = updated.get(other.id) ?? other.points;
-      const coupled = rectAreaSharedEdgeCouple(primaryPoints, otherPoints, delta);
+      // Every neighbor is compared with the same pre-drag boundary. This is
+      // important when one long edge abuts two shorter edges: after the first
+      // neighbor moves, the primary boundary is no longer at its old position.
+      const coupled = rectAreaSharedEdgeCouple(sharedReference, otherPoints, delta);
       if (!coupled) continue;
       primaryPoints = coupled.points;
       updated.set(other.id, coupled.other);
@@ -1788,6 +1792,59 @@ export class FloorplanCardEditor extends LitElement {
     }
 
     return result;
+  }
+
+  private _rectAreasOverlap(a: Area, b: Area): boolean {
+    const aXs = a.points.map((p) => p.x);
+    const aYs = a.points.map((p) => p.y);
+    const bXs = b.points.map((p) => p.x);
+    const bYs = b.points.map((p) => p.y);
+    return (
+      Math.max(...aXs) > Math.min(...bXs) &&
+      Math.min(...aXs) < Math.max(...bXs) &&
+      Math.max(...aYs) > Math.min(...bYs) &&
+      Math.min(...aYs) < Math.max(...bYs)
+    );
+  }
+
+  /**
+   * Limit a shared-edge resize against rooms that are not part of the current
+   * shared component. A coupled neighbor can encounter a new room after the
+   * drag starts, so clamping only the primary room is insufficient.
+   */
+  private _coupledEdgeResize(
+    primaryId: string,
+    moving: Area,
+    delta: { dx: number; dy: number },
+    areas: readonly Area[]
+  ): { areas: Area[]; coupledIds: Set<string>; delta: { dx: number; dy: number } } {
+    const requested = this._coupleRectAreaSharedEdges(primaryId, moving.points, delta, areas);
+    if (!requested.coupledIds.size) return { ...requested, delta };
+
+    const componentIds = new Set([primaryId, ...requested.coupledIds]);
+    const obstacles = areas.filter((a) => !componentIds.has(a.id));
+    const collides = (candidate: { areas: Area[] }): boolean =>
+      candidate.areas.some(
+        (a) => componentIds.has(a.id) && obstacles.some((other) => this._rectAreasOverlap(a, other))
+      );
+
+    if (!collides(requested)) return { ...requested, delta };
+
+    let low = 0;
+    let high = 1;
+    for (let i = 0; i < 18; i++) {
+      const scale = (low + high) / 2;
+      const candidateDelta = { dx: delta.dx * scale, dy: delta.dy * scale };
+      const candidate = this._coupleRectAreaSharedEdges(primaryId, moving.points, candidateDelta, areas);
+      if (collides(candidate)) high = scale;
+      else low = scale;
+    }
+
+    const safeDelta = { dx: delta.dx * low, dy: delta.dy * low };
+    return {
+      ...this._coupleRectAreaSharedEdges(primaryId, moving.points, safeDelta, areas),
+      delta: safeDelta,
+    };
   }
 
   private _applyDrag(p: DragMove): void {
@@ -1870,8 +1927,14 @@ export class FloorplanCardEditor extends LitElement {
 
       // The coupling helper applies delta to the live room. Passing points
       // here would apply the same edge movement twice and make the shared
-      // boundary drift between pointer frames.
-      const coupled = this._coupleRectAreaSharedEdges(drag.primary.id, moving.points, delta, f.areas ?? []);
+      // boundary drift between pointer frames. The coupled resize also checks
+      // every room moved by the shared component against new obstacles.
+      const coupled = this._coupledEdgeResize(
+        drag.primary.id,
+        moving,
+        delta,
+        f.areas ?? []
+      );
       const uncoupled = (coupled.areas ?? []).filter(
         (a) => a.id !== drag.primary.id && !coupled.coupledIds.has(a.id)
       );
@@ -1881,7 +1944,7 @@ export class FloorplanCardEditor extends LitElement {
       points = rectAreaClamp(
         sharedPoints,
         uncoupled,
-        delta
+        coupled.delta
       );
       this._emitFloor({
         areas: coupled.areas.map((a) => (a.id === drag.primary.id ? { ...a, points } : a)),

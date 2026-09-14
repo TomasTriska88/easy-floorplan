@@ -423,9 +423,16 @@ describe("rectAreaSharedSides", () => {
   it("ignores partial overlap and diagonal touch as a shared edge", () => {
     const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
     const overlap = [{ x: 10, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 10 }, { x: 10, y: 10 }];
-    const diagonal = [{ x: 20, y: 5 }, { x: 40, y: 5 }, { x: 40, y: 15 }, { x: 20, y: 15 }];
+    const diagonal = [{ x: 20, y: 10 }, { x: 40, y: 10 }, { x: 40, y: 20 }, { x: 20, y: 20 }];
     expect(rectAreaSharedSides(a, overlap)).toEqual([]);
     expect(rectAreaSharedSides(a, diagonal)).toEqual([]);
+  });
+
+  it("finds a shared side when only part of the two edges overlaps", () => {
+    const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const partial = [{ x: 20, y: 5 }, { x: 40, y: 5 }, { x: 40, y: 15 }, { x: 20, y: 15 }];
+    expect(rectAreaSharedSides(a, partial)).toEqual(["right"]);
+    expect(rectAreaSharedSides(partial, a)).toEqual(["left"]);
   });
 });
 
@@ -564,10 +571,104 @@ describe("rectAreaSharedEdgeCouple", () => {
     expect(rectAreaSharedEdgeCouple(a, b, { dx: 0, dy: 5 })).toBeUndefined();
   });
 
-  it("does not couple rectangles that only share part of a side", () => {
+  it("does not couple a shared edge when there is no effective movement", () => {
+    const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const b = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    expect(rectAreaSharedEdgeCouple(a, b, { dx: 0, dy: 0 })).toBeUndefined();
+  });
+
+  it("does not couple a vertical shared wall during a vertical resize", () => {
+    const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }];
+    const b = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 20 }, { x: 20, y: 20 }];
+    expect(rectAreaSharedEdgeCouple(a, b, { dx: 0, dy: 5 })).toBeUndefined();
+  });
+
+  it("does not couple a horizontal shared wall during a horizontal resize", () => {
+    const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }];
+    const b = [{ x: 0, y: 20 }, { x: 20, y: 20 }, { x: 20, y: 40 }, { x: 0, y: 40 }];
+    expect(rectAreaSharedEdgeCouple(a, b, { dx: 5, dy: 0 })).toBeUndefined();
+  });
+
+  it("couples rectangles whose shared vertical edges overlap only partially", () => {
     const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
     const partial = [{ x: 20, y: 5 }, { x: 40, y: 5 }, { x: 40, y: 15 }, { x: 20, y: 15 }];
-    expect(rectAreaSharedEdgeCouple(a, partial, { dx: 5, dy: 0 })).toBeUndefined();
+    expect(rectAreaSharedEdgeCouple(a, partial, { dx: 5, dy: 0 })).toEqual({
+      points: [
+        { x: 0, y: 0 },
+        { x: 25, y: 0 },
+        { x: 25, y: 10 },
+        { x: 0, y: 10 },
+      ],
+      other: [
+        { x: 25, y: 5 },
+        { x: 40, y: 5 },
+        { x: 40, y: 15 },
+        { x: 25, y: 15 },
+      ],
+    });
+  });
+
+  it("couples a long edge to two shorter adjacent rectangles", () => {
+    const center = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }];
+    const upper = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    const lower = [{ x: 20, y: 10 }, { x: 40, y: 10 }, { x: 40, y: 20 }, { x: 20, y: 20 }];
+
+    const first = rectAreaSharedEdgeCouple(center, upper, { dx: 5, dy: 0 });
+    expect(first).toBeDefined();
+    expect(first?.points[1].x).toBe(25);
+    expect(first?.other[0].x).toBe(25);
+    expect(first?.other[3].x).toBe(25);
+
+    const second = rectAreaSharedEdgeCouple(center, lower, { dx: 5, dy: 0 });
+    expect(second).toBeDefined();
+    expect(second?.points[2].x).toBe(25);
+    expect(second?.other[0].x).toBe(25);
+    expect(second?.other[3].x).toBe(25);
+  });
+
+  it("couples unequal horizontal spans when pushing or pulling a shared edge", () => {
+    const top = [{ x: 0, y: 0 }, { x: 15, y: 0 }, { x: 15, y: 20 }, { x: 0, y: 20 }];
+    const bottom = [{ x: 5, y: 20 }, { x: 25, y: 20 }, { x: 25, y: 35 }, { x: 5, y: 35 }];
+
+    for (const dy of [5, -5]) {
+      const coupled = rectAreaSharedEdgeCouple(top, bottom, { dx: 0, dy });
+      expect(coupled).toBeDefined();
+      expect(coupled?.points[2].y).toBe(20 + dy);
+      expect(coupled?.other[0].y).toBe(20 + dy);
+      expect(coupled?.other[1].y).toBe(20 + dy);
+    }
+  });
+
+  it("pushes and pulls all four edges against unequal adjacent rectangles", () => {
+    const center = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }];
+    const left = [{ x: -20, y: 5 }, { x: 0, y: 5 }, { x: 0, y: 25 }, { x: -20, y: 25 }];
+    const right = [{ x: 20, y: -5 }, { x: 40, y: -5 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    const top = [{ x: 5, y: -20 }, { x: 25, y: -20 }, { x: 25, y: 0 }, { x: 5, y: 0 }];
+    const bottom = [{ x: -10, y: 20 }, { x: 10, y: 20 }, { x: 10, y: 40 }, { x: -10, y: 40 }];
+
+    for (const dx of [5, -5]) {
+      const leftResult = rectAreaSharedEdgeCouple(center, left, { dx, dy: 0 });
+      expect(leftResult?.points[0].x).toBe(dx);
+      expect(leftResult?.other[1].x).toBe(dx);
+      expect(leftResult?.other[2].x).toBe(dx);
+
+      const rightResult = rectAreaSharedEdgeCouple(center, right, { dx, dy: 0 });
+      expect(rightResult?.points[1].x).toBe(20 + dx);
+      expect(rightResult?.other[0].x).toBe(20 + dx);
+      expect(rightResult?.other[3].x).toBe(20 + dx);
+    }
+
+    for (const dy of [5, -5]) {
+      const topResult = rectAreaSharedEdgeCouple(center, top, { dx: 0, dy });
+      expect(topResult?.points[0].y).toBe(dy);
+      expect(topResult?.other[2].y).toBe(dy);
+      expect(topResult?.other[3].y).toBe(dy);
+
+      const bottomResult = rectAreaSharedEdgeCouple(center, bottom, { dx: 0, dy });
+      expect(bottomResult?.points[2].y).toBe(20 + dy);
+      expect(bottomResult?.other[0].y).toBe(20 + dy);
+      expect(bottomResult?.other[1].y).toBe(20 + dy);
+    }
   });
 });
 
