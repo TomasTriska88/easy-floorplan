@@ -51,6 +51,7 @@ screen size.
 
 
 - 🛋️ **Furniture that does something** 🆕 — tap, hold and double-tap actions on any piece, the same ones a room has. A staircase can keep changing floor on tap and open more-info on hold. See [Actions on furniture](https://github.com/nicosandller/easy-floorplan/blob/main/docs/behavior.md#actions-on-furniture).
+- 🧭 **Put the floor switcher anywhere** 🆕 — the floor buttons were pinned to the top-right corner, which on a dense plan sits over the drawing. Drag them onto whatever part of your plan is empty; the position is in canvas units, so it holds at any card size. See [Where the floor switcher sits](https://github.com/nicosandller/easy-floorplan/blob/main/docs/appearance.md#where-the-floor-switcher-sits).
 - 🏢 **Multiple floors** — per-floor elements with a switcher in both the editor and the card. Give a staircase `goToFloor: up` and clicking it takes you there.
 - 🖼️ **Background image** — trace over a floor-plan scan, per floor, with adjustable opacity.
 - 🏷️ **Named colors** 🆕 — name a colour once under Project and point any colour field at it from a dropdown, instead of copying the same hex into every sensor that uses it. Recolour the name and everything using it follows; rename or delete it and nothing breaks. See [Named colors](https://github.com/nicosandller/easy-floorplan/blob/main/docs/appearance.md#named-colors).
