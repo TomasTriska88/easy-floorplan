@@ -80,11 +80,12 @@ views:
             # in configuration.yaml. If the plan looks unexpectedly dim, that is
             # this, and it is working.
             sunDimming: true
-            # …and the light itself, which is what the two skylights below are
-            # here to show. `docker/sun-at.mjs` moves the sun without waiting
-            # for the day: at 9 the patches rake across the plan, at 12 they
-            # sit almost under the roof lights that cast them, and the way that
-            # distance changes IS the skylight feature.
+            # Draw sunlight through openings so the roller shutter below can
+            # be checked with its cover position slider (PR #271) — and so the
+            # two skylights have something to show. `docker/sun-at.mjs` moves
+            # the sun without waiting for the day: at 9 the patches rake across
+            # the plan, at 12 they sit almost under the roof lights that cast
+            # them, and the way that distance changes IS the skylight feature.
             sunlight: true
 
             # Two floors, so the card draws its switcher and issue #121 has
@@ -117,6 +118,9 @@ views:
                     y: 100
                     length: 140
                     angle: 0
+                    # The demo cover has no shutter device_class, so state its
+                    # motion explicitly: a closed roller blocks sun and lamp glow.
+                    motion: roll
                     entity: cover.living_room_window
                   - { id: o2, type: door, x: 500, y: 500, length: 90, angle: 0 }
                   # The garage door is open/close only -- no position at all -- which

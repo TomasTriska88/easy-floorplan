@@ -1745,6 +1745,28 @@ export function furnitureForm(
         helper: "Clicking this piece changes floor — for a staircase",
         selector: dropdown(opt("", "Nothing"), opt("up", "Up one floor"), opt("down", "Down one floor")),
       },
+      // Actions on the piece itself (issue #284), offered on every piece the
+      // way a room's actions are — furniture with no entity can still navigate or call
+      // a service, and requiring one first would rule that out.
+      //
+      // The tap helper names what it replaces, but only when there is
+      // something to replace: on an ordinary piece a tap does nothing today,
+      // and claiming it "replaces the floor change" would describe a staircase
+      // this piece is not.
+      {
+        name: "tap_action",
+        label: "Tap action",
+        helper: f.goToFloor
+          ? "Replaces the floor change. Put an action on hold or double-tap to keep both"
+          : undefined,
+        selector: { ui_action: { default_action: "none" } },
+      },
+      { name: "hold_action", label: "Hold action", selector: { ui_action: { default_action: "none" } } },
+      {
+        name: "double_tap_action",
+        label: "Double-tap action",
+        selector: { ui_action: { default_action: "none" } },
+      },
     ],
     data: {
       type: f.type,
@@ -1754,6 +1776,9 @@ export function furnitureForm(
       angle: f.angle ?? 0,
       entity: f.entity ?? "",
       goToFloor: f.goToFloor ?? "",
+      tap_action: f.tap_action,
+      hold_action: f.hold_action,
+      double_tap_action: f.double_tap_action,
     },
     // "" is the empty option, and means the piece is ordinary furniture.
     toPatch: (p) => ("goToFloor" in p && !p.goToFloor ? { ...p, goToFloor: undefined } : p),
@@ -2312,6 +2337,13 @@ export function projectSunForm(c: FloorplanCardConfig): FormSpec {
 export function projectReliefForm(c: FloorplanCardConfig): FormSpec {
   const fields: FormField[] = [
     {
+      name: "ambientDaylight",
+      label: "Ambient daylight",
+      helper:
+        "Soft sky light through exterior windows and open or glazed doors, even when direct sun does not hit them",
+      selector: { boolean: {} },
+    },
+    {
       name: "sunlight",
       label: "Let the sun in",
       helper:
@@ -2367,6 +2399,7 @@ export function projectReliefForm(c: FloorplanCardConfig): FormSpec {
   return {
     fields,
     data: {
+      ambientDaylight: c.ambientDaylight ?? false,
       sunlight: c.sunlight ?? false,
       sunShade: c.sunShade ?? true,
       north: c.north ?? 0,
@@ -2375,13 +2408,20 @@ export function projectReliefForm(c: FloorplanCardConfig): FormSpec {
       sunBearing: c.sunBearing ?? DEFAULT_SUN_BEARING,
     },
     toPatch: (p) => {
-      const out = { ...p };
-      // Nothing left to aim or to paint, so all of it goes — every one of
-      // these keys is read only while the light is on, and left behind they
+      let out = { ...p };
+      // Ambient daylight is an independent opt-in; false is the default and
+      // therefore stays out of YAML even when direct sunlight is also toggled.
+      if ("ambientDaylight" in out && !out.ambientDaylight)
+        out = { ...out, ambientDaylight: undefined };
+      // Nothing left to aim or to paint, so all of the direct-sun state goes —
+      // every one of these keys is read only while the light is on, and left behind they
       // would sit in the YAML meaning nothing and come back stale on
       // re-enable. The colours are set by their own rows rather than by this
       // form, which is exactly why they have to be named here: nothing else
       // is watching this switch.
+      // ambientDaylight is deliberately absent from the list below: it is a
+      // sibling layer with its own switch, so turning the direct sun off must
+      // not silently turn the sky off with it.
       if ("sunlight" in out && !out.sunlight) {
         return {
           ...out,

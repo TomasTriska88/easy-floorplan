@@ -250,6 +250,42 @@ For the roof **hatch** — a loft door, a smoke vent, a lantern with a solid fla
 
 See [Skylights](lighting.md#skylights) for where that light lands.
 
+## Where the floor switcher sits
+
+The floor buttons have always been pinned to the plan's top-right corner. That is a guess
+about the drawing, and only the author knows whether their plan has anything there — *"they
+often end up right in the middle of the floor plan on smaller screens"* (issue #281).
+
+![The same plan twice: the switcher over the bedroom, and moved down into the empty hall](img/floor-switcher-position.png)
+
+Drag it. In the editor the switcher appears on the canvas as a handle — dimmed while it is
+still in its default corner — and dropping it anywhere stores the point:
+
+```yaml
+type: custom:easy-floorplan-card
+floorSwitcher: { x: 200, y: 152 }
+```
+
+**Canvas units, not screen pixels**, because it is a statement about the drawing: put it in
+the hall, not twelve pixels from an edge whose position depends on the phone. That also
+means it follows `rotation` exactly as devices and labels do, so a plan turned for a wall
+tablet keeps the switcher in the same corner of the house.
+
+A point outside the canvas is kept rather than clamped — a plan whose walls stop short of
+the edge has real margin to park it in.
+
+**Zooming into a room does not carry the switcher with it.** The buttons are how you change
+floor, and a zoom can scale the plan well past the card, so a switcher that travelled with
+the drawing would leave the screen the moment you tapped a room at the far end — with no
+way to change floor until you zoomed back out. It holds its place in the card instead. The
+position you choose is measured against the unzoomed plan, which is the view people
+normally see.
+
+**Project → Floor switcher** carries X and Y fields and a *Back to the corner* button —
+the coordinates because a drag needs a pointer and is aimed by eye, and the button because
+returning to the default is the one thing a drag cannot express. Leave it alone and nothing changes: a plan
+that stores no position emits no positioning at all and renders exactly as it always has.
+
 ## Overlay scale
 
 The card draws in two layers. Walls, doors, furniture and room fills are SVG, scaled from
@@ -405,6 +441,13 @@ rotationLandscape: 0   # desktop, wall tablet
 In the editor: **Project → Display**, under *Rotate display*.
 
 Icons and labels stay upright at every angle, so a rotated plan is still readable.
+
+A **bearing** is the exception, and has to be: a ripple's `rippleDirection` says which way
+a sensor looks *in the room*, so it turns with the drawing rather than staying put on
+screen. Otherwise a cone aimed at a wall in the editor pointed at open space once the card
+was rotated (issue #280).
+
+![The same sensor at every rotation: before, the cone stays pointing up the screen while the wall moves; after, it follows the wall](img/ripple-direction-rotation.png)
 
 ## Styling hooks (card-mod)
 

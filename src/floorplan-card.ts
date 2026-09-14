@@ -8,6 +8,7 @@ import type {
   FloorItem,
   FloorText,
   Floor,
+  Furniture,
   Area,
   OverlayScale,
   RenderHass,
@@ -69,6 +70,8 @@ import {
   renderRipple,
   renderFurniture,
   furnitureColor,
+  furnitureAccessibleName,
+  furnitureActionForGesture,
   furnitureFloorTarget,
   renderTracker,
   renderArea,
@@ -84,7 +87,7 @@ import {
   wallsLightPassesThrough,
   openingClearFraction,
   glowClearSpan,
-  polygonCentroid,
+  areaLabelPoint,
   trackerSensorReading,
   entityIsActive,
   itemBadgeLabel,
@@ -116,6 +119,7 @@ import {
   SUN_LIGHT_COLOR,
   SUN_SHADE_COLOR,
   hassRenderInputsChanged,
+  collectNamedEntities,
   collectWatchedEntities,
   resolveItemIcon,
   resolveIconAnimation,
@@ -123,6 +127,8 @@ import {
   resolvePlanRotation,
   subscribeOrientation,
   rotatedCanvasSize,
+  floorSwitcherAnchor,
+  rotatePlanAngle,
   rotatePlanPoint,
   planRotationTransform,
   areaZoomTransform,
@@ -143,8 +149,15 @@ import {
   SKIN_TEXT,
   SKIN_WALL,
 } from "./skins";
-import { actionForGesture, executeAction, hasAction, itemIsInteractive } from "./actions";
+import {
+  actionForGesture,
+  executeAction,
+  gestureDoesSomething,
+  hasAction,
+  itemIsInteractive,
+} from "./actions";
 import { actionHandler } from "./action-handler";
+import { renderAmbientDaylightLayer } from "./ambient-daylight-integration";
 import { ReplayControllerImpl } from "./replay-history/replay-controller";
 import { createReplayPanelProps, renderReplayPanel } from "./replay-history/replay-panel";
 
@@ -181,6 +194,11 @@ export class FloorplanCard extends LitElement {
   private readonly _glowIdBase = `fp-glow-${FloorplanCard._nextGlowId++}`;
   /** Entity ids this plan actually displays; used to skip irrelevant hass updates. */
   private _watchedEntities: Set<string> = new Set();
+  /**
+   * Entities that only appear in an accessible name (issue #284). Kept apart
+   * from `_watchedEntities` on purpose — see `collectNamedEntities`.
+   */
+  private _nameEntities: Set<string> = new Set();
   private readonly _replayController = new ReplayControllerImpl({
     getConfig: () => this._config,
     getHass: () => this.hass,
@@ -264,6 +282,7 @@ export class FloorplanCard extends LitElement {
       furniture: config.furniture ?? [],
     };
     this._watchedEntities = collectWatchedEntities(this._config);
+    this._nameEntities = collectNamedEntities(this._config);
     this._syncHistoryServiceContext();
     this._replayController.clearConfigColorCache();
     // HA calls setConfig on every keystroke in the config box. Clearing the
@@ -303,7 +322,16 @@ export class FloorplanCard extends LitElement {
     if (!(changed.size === 1 && changed.has("hass"))) return true;
     const prev = changed.get("hass") as HomeAssistant | undefined;
     if (!prev || !this.hass) return true;
-    return hassRenderInputsChanged(prev, this.hass, this._watchedEntities);
+    if (hassRenderInputsChanged(prev, this.hass, this._watchedEntities)) return true;
+    // Entities that name a button but draw nothing. They have to invalidate a
+    // render — a renamed entity, or one that did not exist at first paint,
+    // otherwise leaves the label stuck at the name it first found — but they
+    // stay out of `_watchedEntities` so `buildRenderHass` never asks a replay
+    // for the history of something the plan does not show.
+    for (const id of this._nameEntities) {
+      if (prev.states[id] !== this.hass.states[id]) return true;
+    }
+    return false;
   }
 
   /**
@@ -629,6 +657,29 @@ export class FloorplanCard extends LitElement {
     executeAction(this, this.hass, { entity: press.entity }, press.config);
   }
 
+  /**
+   * A gesture on a piece of furniture (issue #284): its configured action, or —
+   * for a tap with nothing configured — the floor change it already did.
+   *
+   * The same shape as `_onAreaAction`, and for the same reason: every plan
+   * drawn before furniture had actions has three unset gestures, so a
+   * staircase still changes floor on tap and nothing else answers at all.
+   */
+  private _onFurnitureAction(
+    ev: CustomEvent<{ action: "tap" | "hold" | "double_tap" }>,
+    f: Furniture,
+    floors: readonly Floor[],
+    to: string | undefined,
+  ): void {
+    const press = furnitureActionForGesture(f, ev.detail.action);
+    if (!press) {
+      if (ev.detail.action === "tap" && to) this._goToFloor(floors, to);
+      return;
+    }
+    if (!this.hass) return;
+    executeAction(this, this.hass, { entity: press.entity }, press.config);
+  }
+
   private _renderBadge(item: FloorItem, scale: OverlayScale, renderHass: RenderHass | undefined): TemplateResult {
     const size = cssNumber(item.size, DEFAULT_ITEM_SIZE);
     const box = overlayLength(size, scale);
@@ -774,7 +825,15 @@ export class FloorplanCard extends LitElement {
       )
     );
     const rippleSize = item.rippleSize ?? DEFAULT_RIPPLE_SIZE;
-    const rippleDirection = item.rippleDirection ?? DEFAULT_RIPPLE_DIRECTION;
+    // Turned into the displayed frame (issue #280). The direction is a bearing
+    // in the room — which way the sensor looks — and the overlay it lives in is
+    // never rotated as a whole, so without this a rotated card aimed the cone
+    // at a different wall than the plan does. The shutter mark's normal has
+    // taken `rot` for the same reason since it existed.
+    const rippleDirection = rotatePlanAngle(
+      item.rippleDirection ?? DEFAULT_RIPPLE_DIRECTION,
+      rot
+    );
     const rippleWidth = item.rippleWidth ?? DEFAULT_RIPPLE_WIDTH;
 
     // Apply visibility hidden to keep the layout space intact for the label
@@ -866,7 +925,7 @@ export class FloorplanCard extends LitElement {
     scale: OverlayScale
   ): TemplateResult | typeof nothing {
     if (!a.name || (a.showName ?? true) === false) return nothing;
-    const centroid = polygonCentroid(a.points);
+    const centroid = areaLabelPoint(a.points);
     const p = rotatePlanPoint(centroid.x, centroid.y, c.width, c.height, rot);
     const d = rotatedCanvasSize(c.width, c.height, rot);
     // Empty unless the size has something to say the stylesheet doesn't — see
@@ -1112,6 +1171,20 @@ export class FloorplanCard extends LitElement {
                   ${renderArea(a, areaColor(a, a.entity ? renderHass?.states[a.entity]?.state : undefined))}
                 </g>`;
             })}
+            <!-- Diffuse sky light (PR #204). Reads its opening travel, shutter
+                 state and sun elevation through the same replay-aware state
+                 source as every other light layer, so a replayed plan shows the
+                 daylight of the moment being replayed rather than of now. -->
+            ${renderAmbientDaylightLayer(
+              active,
+              c,
+              renderHass,
+              `${this._wallMaskId}-ambient`,
+              {
+                amount: (o) => this._openingAmount(o, renderHass),
+                secondAmount: (o) => this._openingSecond(o, renderHass)?.amount,
+              }
+            )}
             <!-- Dead spaces (issue #88): the regions the walls seal off that no
                  door or window reaches, hatched. Above the room fills, so a
                  region someone has also drawn an area over still reads as
@@ -1155,20 +1228,84 @@ export class FloorplanCard extends LitElement {
               // is still a staircase, but it takes no clicks rather than
               // offering a control that does nothing.
               const to = furnitureFloorTarget(f, floors, active.id);
-              if (!to) return drawn;
+              // …and anything else the piece was told to do (issue #284). Hold
+              // and double-tap are asked for separately because the handler
+              // needs to know whether to spend their timers: a staircase with
+              // only a floor change must still answer a tap immediately.
+              //
+              // Whether the gesture could actually *run*, which is a stricter
+              // question than whether one is configured. `hasAction` only says
+              // "present and not `none`", and the guards `executeAction`
+              // applies go further: a `more-info` with no entity to show, a
+              // `navigate` with no path, a `call-service` with no service all
+              // pass it and then do nothing. Asking the weaker question hands
+              // a tab stop and a button role to a piece that answers to
+              // nothing, and spends the hold and double-tap timers on gestures
+              // that cannot fire — so every tap waits out a hold that was
+              // never going to happen.
+              const runs = (g: "tap" | "hold" | "double_tap"): boolean => {
+                const p = furnitureActionForGesture(f, g);
+                return !!p && gestureDoesSomething({ entity: p.entity }, p.config);
+              };
+              const hasHold = runs("hold");
+              const hasDoubleClick = runs("double_tap");
+              const hasTap = runs("tap");
+              // Configured at all, `none` included — a separate question from
+              // whether it does anything. Writing `tap_action: none` on a
+              // staircase is how a plan says "draw the stairs, but do not let
+              // them navigate", so a configured tap suppresses the floor
+              // fallback whether or not it is a no-op. `_onFurnitureAction`
+              // decides the same way, by asking whether a tap was configured
+              // rather than whether it does anything.
+              const tapConfigured = !!furnitureActionForGesture(f, "tap");
+              const goesToFloor = !!to && !tapConfigured;
+              // An inert piece stays inert: no role, no tab stop, no listeners.
+              // A gray diagram that announces itself as a button and then does
+              // nothing is worse than one that says nothing at all.
+              if (!goesToFloor && !hasTap && !hasHold && !hasDoubleClick) return drawn;
+              // The button role and the tab stop are earned by the *tap*, not by
+              // any gesture at all. `actionHandler` turns Enter and Space into
+              // a tap and nothing else, so a piece whose only action sits on
+              // hold or double-tap would take focus, announce itself as a
+              // button, and then do nothing when a keyboard user pressed it —
+              // a promise this card cannot keep.
+              //
+              // Such a piece keeps its listeners, so the hold still works under
+              // a pointer; it just stops advertising a control that cannot be
+              // operated. Hold and double-tap being pointer-only is not new
+              // here — it is true of every item and room on the plan, because
+              // the keyboard has one activation and they are the second and
+              // third gestures on it.
+              const tappable = hasTap || goesToFloor;
               const name = floors.find((x) => x.id === to)?.name;
-              return svg`<g class="fp-furniture-link" role="button" tabindex="0"
-                    @action=${() => this._goToFloor(floors, to)}
-                    .actionHandler=${actionHandler({
-                      // A staircase has one gesture. Saying so keeps a tap from
-                      // sitting out the hold and double-tap timers before it
-                      // does anything.
-                      hasHold: false,
-                      hasDoubleClick: false,
-                    })}>
+              // Names the gesture that actually runs. A configured tap replaces
+              // the floor change, so promising "Go to Upstairs" would be a lie
+              // on exactly the plans this feature was asked for.
+              const label = goesToFloor ? (name ? `Go to ${name}` : "Go to the next floor") : undefined;
+              // With no floor label there is nothing naming this button, so
+              // say what it is. Only in that case: an `aria-label` would
+              // override the <title> that is already doing the job.
+              //
+              // From the live hass, not `renderHass`, which is the one place
+              // in this template that wants it. `renderHass` is filtered to
+              // the entities the *drawing* watches, and an action's target is
+              // deliberately not one of them — a tap opening a light does not
+              // change how the room looks. Reading the name there would find
+              // nothing and fall back to the raw entity id. It is also what
+              // the gesture itself does: `_onFurnitureAction` hands the live
+              // hass to `executeAction`, so the button is named after the
+              // state it will actually act on, replay or no replay.
+              const spoken = tappable && !label ? furnitureAccessibleName(f, this.hass, symbolCatalog(c.symbols)) : nothing;
+              return svg`<g class="fp-furniture-link"
+                    role=${tappable ? "button" : nothing}
+                    tabindex=${tappable ? "0" : nothing}
+                    aria-label=${spoken}
+                    @action=${(ev: CustomEvent<{ action: "tap" | "hold" | "double_tap" }>) =>
+                      this._onFurnitureAction(ev, f, floors, to)}
+                    .actionHandler=${actionHandler({ hasHold, hasDoubleClick })}>
                   <!-- An SVG tooltip is a <title> child, not a title=
                        attribute: the attribute does nothing here. -->
-                  <title>${name ? `Go to ${name}` : "Go to the next floor"}</title>
+                  ${label ? svg`<title>${label}</title>` : nothing}
                   ${drawn}
                 </g>`;
             })}
@@ -1429,7 +1566,18 @@ export class FloorplanCard extends LitElement {
               </button>`
             : nothing}
           ${compactTitle ? html`<div class="plan-title">${c.title}</div>` : nothing}
-          ${floors.length > 1 ? this._renderFloorSwitcher(floors, active, compact) : nothing}
+          <!-- Outside the zoom wrapper on purpose, placed or not (issue #281).
+               The buttons are how you change floor, and zoom-to-room can scale
+               the plan well past the card: carried along, a switcher placed in
+               the hall would leave the viewport the moment you tapped a room at
+               the other end, and there would be no way to change floor until
+               you zoomed back out. A control you can lose is a worse failure
+               than one that overlaps the drawing for as long as a zoom lasts —
+               and the position is chosen against the view people spend their
+               time in, which is the unzoomed one. -->
+          ${floors.length > 1
+            ? this._renderFloorSwitcher(floors, active, compact, c, rot)
+            : nothing}
         </div>
         </div>
       </ha-card>
@@ -1441,9 +1589,32 @@ export class FloorplanCard extends LitElement {
     return renderReplayPanel(createReplayPanelProps(this._replayController));
   }
 
-  private _renderFloorSwitcher(floors: Floor[], active: Floor, compact = false): TemplateResult {
+  private _renderFloorSwitcher(
+    floors: Floor[],
+    active: Floor,
+    compact = false,
+    c?: FloorplanCardConfig,
+    rot: PlanRotation = 0,
+  ): TemplateResult {
+    // Where the author put it (issue #281), mapped into the displayed frame
+    // like every other anchor so a rotated card keeps it in the same corner of
+    // the house. Absent, the CSS corner it has always used stands — the class
+    // is what switches between the two, so an unpositioned plan emits no
+    // inline style at all and is byte-identical to before.
+    const at = c ? floorSwitcherAnchor(c) : undefined;
+    const placed = at
+      ? rotatePlanPoint(at.x, at.y, cssNumber(c!.width, DEFAULT_WIDTH), cssNumber(c!.height, DEFAULT_HEIGHT), rot)
+      : undefined;
+    const dims = c
+      ? rotatedCanvasSize(cssNumber(c.width, DEFAULT_WIDTH), cssNumber(c.height, DEFAULT_HEIGHT), rot)
+      : { w: 1, h: 1 };
     return html`
-      <div class="floor-switcher ${compact ? "row" : ""}">
+      <div
+        class="floor-switcher ${compact ? "row" : ""} ${placed ? "placed" : ""}"
+        style=${placed
+          ? `left:${(placed.x / dims.w) * 100}%; top:${(placed.y / dims.h) * 100}%;`
+          : nothing}
+      >
         ${floors.map((f) => {
           // Per-floor accent (issue #67): applied only while active so the
           // resting buttons stay theme-neutral. cssColor gates the config
@@ -1625,6 +1796,19 @@ export class FloorplanCard extends LitElement {
       pointer-events: auto;
       z-index: 1;
     }
+    /* Placed by the author (issue #281). The corner rules above are overridden
+       rather than made conditional, so a plan that sets no position emits no
+       inline style and renders exactly as it always has. The right:auto is the
+       load-bearing half: without it the block is pinned to both edges and the
+       left the card just set does nothing but stretch it. */
+    .floor-switcher.placed {
+      right: auto;
+      transform: translate(-50%, -50%);
+    }
+    /* Centred on its anchor in both axes, so the point you drop it on is the
+       middle of the block rather than a corner of it — which is what makes a
+       drag feel like it is holding the thing it is holding. A wrapped compact
+       row centres the same way. */
     /* Compact chrome (issue #152): the buttons run across the top strip
        instead of down the side, so they share it with the title chip rather
        than each claiming their own band. Wrapped, because a plan with eight
