@@ -63,7 +63,7 @@ import {
   DEFAULT_RIPPLE_WIDTH,
 } from "./types";
 import { cssColor, cssColorOr, cssNumber, cssIdent, cssEntityId, cssIcon } from "./css-safe";
-import { hasAction } from "./actions";
+import { actionTargetEntity, hasAction } from "./actions";
 import { SKIN_ACCENT, SKIN_PAPER, SKIN_WALL, MAX_SKIN_WALL_WIDTH } from "./skins";
 // The same tolerance #141 uses to decide an opening sits on a wall, so "this
 // door is in this wall" means one thing across the card.
@@ -123,6 +123,33 @@ export function hassRenderInputsChanged(
   return false;
 }
 
+/**
+ * Entities that appear in an accessible name but never in the drawing.
+ *
+ * A furniture action can name its own target, and `furnitureAccessibleName`
+ * reads that entity's friendly name to label the button. Nothing about it is
+ * drawn, so it has no business in `collectWatchedEntities`: that set is what
+ * `buildRenderHass` exposes, and a replay would start fetching history for an
+ * entity the plan never shows. But a card that never re-renders when it
+ * changes would go on announcing the name it first saw — or the raw entity id
+ * it fell back to while the entity did not exist yet.
+ *
+ * So: watched for the purpose of *updating*, absent from what gets *drawn*.
+ */
+export function collectNamedEntities(c: FloorplanCardConfig): Set<string> {
+  const ids = new Set<string>();
+  for (const f of getFloors(c)) {
+    for (const piece of f.furniture ?? []) {
+      for (const g of ["tap", "hold", "double_tap"] as const) {
+        const p = furnitureActionForGesture(piece, g);
+        const id = p && actionTargetEntity({ entity: p.entity }, p.config);
+        if (id) ids.add(id);
+      }
+    }
+  }
+  return ids;
+}
+
 /** Every entity id whose state can change what a plan draws (all floors). */
 export function collectWatchedEntities(c: FloorplanCardConfig): Set<string> {
   const ids = new Set<string>();
@@ -135,11 +162,12 @@ export function collectWatchedEntities(c: FloorplanCardConfig): Set<string> {
   // attribute moves, so identity comparison in hassRenderInputsChanged
   // catches it.
   //
-  // Sun dimming (#113) reads the elevation. Sunlight reads both halves — the
-  // azimuth for the direction, the elevation for whether there is any light —
-  // but only while it follows the real sun: a pinned sunBearing reads neither
-  // (see sunBearingOf and sunlightStrengthOf), so it needs no subscription.
-  if (c.sunDimming || (c.sunlight && !sunIsPinned(c))) ids.add("sun.sun");
+  // Sun dimming (#113) and ambient daylight read the elevation. Sunlight reads
+  // both halves — the azimuth for the direction, the elevation for whether
+  // there is any light — but only while it follows the real sun: a pinned
+  // sunBearing reads neither (see sunBearingOf and sunlightStrengthOf), so it
+  // needs no subscription.
+  if (c.sunDimming || c.ambientDaylight || (c.sunlight && !sunIsPinned(c))) ids.add("sun.sun");
   for (const f of getFloors(c)) {
     for (const o of f.openings) {
       if (o.entity) ids.add(o.entity);
@@ -712,22 +740,13 @@ export function openingClearFraction(o: Opening, amount: number, secondAmount?: 
 
 /**
  * How much of an opening's gap a lamp's cast pool passes through — the same
- * question {@link openingClearFraction} answers, except glass admits its
- * whole gap however its sash is sitting, the same rule {@link
- * openingSunFraction} already applies to sunlight and by the same field:
- * {@link openingIsGlazed}. `glazed` means one thing — is this opening glass —
- * and a lamp's light passing through glass same as sunlight does is that one
- * fact read twice, not two different rules that happen to agree.
+ * question {@link openingClearFraction} answers, except that clear glass
+ * admits its whole gap however its sash is sitting.
  *
- * One exception sunlight doesn't need: a **roll-motion** window is a blind,
- * shutter, shade, curtain or awning bound as the opening's own entity (an
- * auto-detected `device_class`, see {@link openingFromDeviceClass}) — a
- * covering standing in for the glass behind it, not the glass itself. Glazed
- * by the same default every window gets, it would read as always-clear no
- * matter how far down it actually is, defeating the one thing binding it was
- * for. So it keeps {@link openingClearFraction}'s answer regardless of
- * `glazed` — the roll-up rule {@link openingClearFraction}'s own docs
- * describe, honoured here too.
+ * Which openings count as clear glass is {@link openingGlassIsClear}, the one
+ * rule sunlight reads too ({@link openingSunFraction}) — including its
+ * roll-motion exception, which sunlight was missing until that helper existed.
+ * Read its docs for the rule and for the blind/shade/curtain gap it leaves.
  *
  * A shutter — the separate `shutterEntity` layered over an opening — overrides
  * the glass, same priority {@link openingSunFraction} gives it: rolled down,
@@ -747,7 +766,7 @@ export function glowClearFraction(
   shutter?: number,
 ): number {
   if (shutter !== undefined && shutter <= 0) return 0;
-  if (openingIsGlazed(o) && openingMotion(o) !== "roll") return 1;
+  if (openingGlassIsClear(o)) return 1;
   return openingClearFraction(o, amount, secondAmount);
 }
 
@@ -767,7 +786,7 @@ export function glowClearSpan(
   shutter?: number,
 ): [number, number] {
   if (shutter !== undefined && shutter <= 0) return [0, 0];
-  if (openingIsGlazed(o) && openingMotion(o) !== "roll") return [0, 1];
+  if (openingGlassIsClear(o)) return [0, 1];
   return openingClearSpan(o, amount, secondAmount);
 }
 
@@ -2486,7 +2505,7 @@ export function kindFromEntity(entity: string): ItemKind {
  * plane), `fixed` (issue #218: it does not) or `awning` (issue #272: hinged at
  * the head, swung out at the sill). Defaults to `swing`.
  */
-export function openingMotion(o: Opening): "swing" | "slide" | "roll" | "fixed" | "awning" {
+export function openingMotion(o: Pick<Opening, "motion">): "swing" | "slide" | "roll" | "fixed" | "awning" {
   return o.motion ?? "swing";
 }
 
@@ -2811,6 +2830,93 @@ export function areaActionForGesture(
     gesture === "tap" ? a.tap_action : gesture === "hold" ? a.hold_action : a.double_tap_action;
   if (!configured) return undefined;
   return { entity: configured.entity ?? a.entity, config: configured };
+}
+
+/**
+ * What a gesture on a piece of furniture should do (issue #284), or
+ * `undefined` for "whatever it did before actions existed".
+ *
+ * The mirror of {@link areaActionForGesture}, and deliberately so: a room's tap
+ * falls back to its zoom, a piece's falls back to its {@link
+ * Furniture.goToFloor}. Returning `undefined` rather than synthesising the
+ * fallback keeps that decision with the caller, which is the only place that
+ * knows whether a floor in that direction actually exists.
+ */
+export function furnitureActionForGesture(
+  f: Pick<Furniture, "entity" | "tap_action" | "hold_action" | "double_tap_action">,
+  gesture: "tap" | "hold" | "double_tap",
+): { entity?: string; config: ActionConfig } | undefined {
+  const configured =
+    gesture === "tap" ? f.tap_action : gesture === "hold" ? f.hold_action : f.double_tap_action;
+  if (!configured) return undefined;
+  return { entity: configured.entity ?? f.entity, config: configured };
+}
+
+/**
+ * What to call a piece of furniture out loud.
+ *
+ * A piece that answers gestures is a button, and `renderFurniture` contributes
+ * paths and nothing else — so unless the floor-change tooltip happens to be
+ * naming it, a screen reader is handed a button with no name at all.
+ *
+ * The entity the gesture will actually act on is the most useful thing to call
+ * it — which is the action's own `entity` where it names one, not the piece's:
+ * a shelf drawn as a plain box whose `tap_action` points at the light on it is
+ * "Shelf light", and calling it "box" would name the drawing instead of the
+ * thing the button does. Failing that the symbol it is drawn as, because that
+ * is what everyone else is looking at. Ids are hyphenated (`double-bed`),
+ * which is not how anything should be read aloud.
+ *
+ * Gestures can disagree about their target, and then there is no right answer,
+ * only a predictable one: tap, then hold, then double-tap — named after the
+ * gesture people reach for first. Only gestures that could actually run are
+ * considered, and only the kinds that act on an entity: an unusable
+ * `more-info` with nothing to show must not win over a working hold, and a
+ * `navigate` acts on a path rather than on anything nameable.
+ *
+ * The piece's own `entity` is still the fallback, whatever its gestures do. It
+ * is what the drawing is bound to — the plant's soil sensor, the shelf's light
+ * — so it names the *thing*, which is the right answer for a button whose
+ * action has no subject of its own.
+ *
+ * Failing both, the symbol — by the name its own definition carries, not by
+ * its id. The ids are written for configs, not for reading aloud
+ * (`cornerShowerCurved`), and the catalogue already holds the words for them
+ * ("curved corner shower"), user-contributed symbols included. Only an id
+ * nothing in the catalogue answers to falls back to unpicking the id itself.
+ */
+export function furnitureAccessibleName(
+  f: Pick<Furniture, "type" | "entity" | "tap_action" | "hold_action" | "double_tap_action">,
+  hass?: RenderHass,
+  catalog: SymbolCatalog = BUILTIN_SYMBOLS,
+): string {
+  const target =
+    (["tap", "hold", "double_tap"] as const)
+      .map((g) => furnitureActionForGesture(f, g))
+      .map((p) => (p ? actionTargetEntity({ entity: p.entity }, p.config) : undefined))
+      .find((e) => e) ?? f.entity;
+  const friendly = target
+    ? (hass?.states[target]?.attributes?.friendly_name as string | undefined)
+    : undefined;
+  return (
+    friendly || target || findSymbol(catalog, f.type)?.name || humanSymbolId(f.type) || "Furniture"
+  );
+}
+
+/**
+ * An unknown symbol id, said as close to English as an id can be got.
+ *
+ * Only for a `type` the catalogue has no definition for — a symbol from a
+ * config that has since been removed, or a typo. Separators become spaces and
+ * camelCase is split at the hump, because `fishTank` read out verbatim is not
+ * a name.
+ */
+function humanSymbolId(type: unknown): string {
+  return String(type ?? "")
+    .replace(/[-_]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .trim();
 }
 
 /**
@@ -3828,6 +3934,42 @@ export function subscribeOrientation(
   return () => {};
 }
 
+/**
+ * Where the floor switcher should be anchored (issue #281), or `undefined` for
+ * the top-right corner it has always used.
+ *
+ * A position is only usable if both halves are real numbers — a half-written
+ * `floorSwitcher: { x: 100 }` is not a point, and placing it at an implied 0
+ * would drop the switcher in the top-left corner with nothing saying why.
+ */
+export function floorSwitcherAnchor(
+  c: Pick<FloorplanCardConfig, "floorSwitcher">,
+): { x: number; y: number } | undefined {
+  const p = c.floorSwitcher;
+  if (!p || typeof p !== "object") return undefined;
+  const x = switcherCoord(p.x);
+  const y = switcherCoord(p.y);
+  return x === undefined || y === undefined ? undefined : { x, y };
+}
+
+/**
+ * One coordinate, or `undefined` if it is not a number anyone wrote on purpose.
+ *
+ * Checks the type before coercing, because `Number()` is far too willing:
+ * `null`, `""`, `false` and `[]` all come back as 0. YAML produces the first
+ * two for a key written with no value — `floorSwitcher: { x:, y: 100 }` — and
+ * reading that as 0 would silently park the switcher on the left edge while
+ * the guard above claimed to have rejected it. A numeric *string* is still
+ * accepted: YAML hands those over freely and they are a real number someone
+ * typed.
+ */
+function switcherCoord(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v !== "string" || v.trim() === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 /** Canvas size as displayed: 90°/270° swap width and height. */
 export function rotatedCanvasSize(
   w: number,
@@ -3960,7 +4102,7 @@ export const SUN_ELEVATION_FULL = 12;
  * blindly turns "we do not know" into a confident wrong answer, so each
  * caller gets `undefined` and applies its own fail-bright default.
  */
-function liveSunAttribute(value: unknown): number | undefined {
+export function liveSunAttribute(value: unknown): number | undefined {
   const usable = typeof value === "number" || (typeof value === "string" && value.trim() !== "");
   if (!usable) return undefined;
   const n = typeof value === "number" ? value : Number(value);
@@ -4195,10 +4337,12 @@ export function sunReachScale(elevation: unknown): number {
  * - a **shutter** that is all the way down stops everything, whatever the
  *   glass says — that is what a shutter is for, and a window behind a closed
  *   one is as dark as a wall;
- * - **glass** admits its whole gap however its sash is sitting, which is the
- *   reason this cannot reuse the lamp rule ({@link wallsLightPassesThrough}'s
- *   `openAmount`) unchanged: that one asks whether there is a *hole*, and a
- *   closed window is not a hole;
+ * - **clear glass** ({@link openingGlassIsClear}) admits its whole gap however
+ *   its sash is sitting, which is the reason this cannot reuse the lamp rule
+ *   ({@link wallsLightPassesThrough}'s `openAmount`) unchanged: that one asks
+ *   whether there is a *hole*, and a closed window is not a hole. A roller
+ *   shutter bound as the window's own entity is not clear glass, which is why
+ *   this asks that helper rather than {@link openingIsGlazed} directly;
  * - anything **opaque** admits exactly as far as it is open.
  *
  * Feed it a clear fraction rather than a raw `amount` ({@link
@@ -4206,7 +4350,7 @@ export function sunReachScale(elevation: unknown): number {
  * travel a leaf has is not the gap it clears.
  */
 export function openingSunFraction(
-  o: Pick<Opening, "type" | "glazed" | "sunlight">,
+  o: Pick<Opening, "type" | "glazed" | "sunlight" | "motion">,
   amount: number,
   /** How far the external shutter is open, or `undefined` when none is bound. */
   shutter?: number,
@@ -4216,7 +4360,7 @@ export function openingSunFraction(
   // however open, however glazed (issue #177).
   if (o.sunlight === false) return 0;
   if (shutter !== undefined && shutter <= 0) return 0;
-  if (openingIsGlazed(o)) return 1;
+  if (openingGlassIsClear(o)) return 1;
   return Math.max(0, Math.min(1, amount));
 }
 
@@ -4226,7 +4370,7 @@ export function openingSunFraction(
  * light in" is the question most callers are actually asking.
  */
 export function openingAdmitsSun(
-  o: Pick<Opening, "type" | "glazed" | "sunlight">,
+  o: Pick<Opening, "type" | "glazed" | "sunlight" | "motion">,
   amount: number,
   shutter?: number,
 ): boolean {
@@ -4241,6 +4385,41 @@ export function openingAdmitsSun(
  */
 export function openingIsGlazed(o: Pick<Opening, "type" | "glazed">): boolean {
   return o.glazed ?? o.type === "window";
+}
+
+/**
+ * Whether an opening's glass should be read as **clear whatever its sash is
+ * doing** — the one rule behind both natural and artificial light, so the two
+ * cannot drift apart.
+ *
+ * Glass admits its whole gap open or shut. That is the whole of the rule for
+ * an ordinary window or a patio door, and it is why neither {@link
+ * openingSunFraction} nor {@link glowClearFraction} can simply reuse {@link
+ * openingClearFraction}: that one asks whether there is a *hole*, and a closed
+ * window is not a hole.
+ *
+ * The exception is a **roll-motion** window. A roller shutter bound as the
+ * opening's own entity (an auto-detected `device_class`, see {@link
+ * openingFromDeviceClass}) is a covering standing in for the glass behind it,
+ * not the glass itself. Glazed by the same default every window gets, it would
+ * otherwise read as always-clear no matter how far down it actually is,
+ * defeating the one thing binding it was for.
+ *
+ * Both light paths ask this same question, because `glazed` means one thing —
+ * is this opening glass — and the sun and a lamp passing through it is that
+ * one fact read twice, not two rules that happen to agree. They diverged
+ * before this existed: a roller shutter closed over a window stopped a lamp's
+ * pool and let the midday sun straight through.
+ *
+ * **Known gap.** The covering test is `motion`, which is the only signal that
+ * survives to render time. A blind, shade or curtain defaults to `slide`
+ * rather than `roll` ({@link openingFromDeviceClass}), so a closed one still
+ * reads as clear glass to both layers. Fixing that needs a covering flag of
+ * its own on {@link Opening} rather than a motion the drawing also depends on,
+ * which is a change of its own.
+ */
+export function openingGlassIsClear(o: Pick<Opening, "type" | "glazed" | "motion">): boolean {
+  return openingIsGlazed(o) && openingMotion(o) !== "roll";
 }
 
 /** The two ends of an opening's gap, in plan coordinates. */
