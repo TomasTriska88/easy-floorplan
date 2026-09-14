@@ -70,6 +70,16 @@ export interface Wall {
    */
   thickness?: number;
   /**
+   * What the line stands for (issue #182). Unset is a full-height `wall`.
+   *
+   * A `railing` is the low edge of a balcony, terrace or gallery: it is drawn
+   * as a thin line, and it is not in the way of anything that happens above
+   * waist height. Lamp light and sunlight carry on over it — a railing across
+   * a balcony used to shade the balcony door behind it all day — and it seals
+   * off no dead space, since what it encloses is open to the air.
+   */
+  kind?: WallKind;
+  /**
    * Pinned in place in the editor (issue #191).
    *
    * A locked element still selects, still edits, still deletes — everything but
@@ -93,6 +103,9 @@ export interface Wall {
    */
   locked?: boolean;
 }
+
+/** See {@link Wall.kind}. */
+export type WallKind = "wall" | "railing";
 
 export type OpeningType = "door" | "window";
 
