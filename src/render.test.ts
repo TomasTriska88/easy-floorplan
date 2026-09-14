@@ -3466,12 +3466,20 @@ describe("the shutter badge (issue #74 follow-up)", () => {
 
   const both = { entity: "binary_sensor.win", shutterEntity: "cover.t" };
 
-  it("is earned only by an opening with both entities bound", () => {
+  it("is shown by default only with both entities bound", () => {
     expect(hasShutterMark(win())).toBe(false);
     expect(hasShutterMark(win({ entity: "binary_sensor.win" }))).toBe(false);
-    // A shutter alone has no second entity to reveal — the symbol is it.
+    // A shutter alone has no second entity to reveal, so it starts off —
+    // switching it on here would badge every shutter-only window on upgrade.
     expect(hasShutterMark(win({ shutterEntity: "cover.t" }))).toBe(false);
     expect(hasShutterMark(win(both))).toBe(true);
+  });
+
+  it("can be switched on for a shutter bound alone (issue #293)", () => {
+    // The roll-up without a window contact: raised, only its track line is left.
+    expect(hasShutterMark(win({ shutterEntity: "cover.t", showShutterIcon: true }))).toBe(true);
+    // Switching it on needs a shutter to badge; an opening entity is not one.
+    expect(hasShutterMark(win({ entity: "binary_sensor.win", showShutterIcon: true }))).toBe(false);
   });
 
   it("can be switched off, and off is the only value worth storing", () => {

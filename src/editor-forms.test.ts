@@ -1668,9 +1668,15 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(defaultOf({ ...win, shutterEntity: "cover.s" } as Opening, "hold_action")).toBe("none");
   });
 
-  it("offers the icon switch only with two entities, and the glyph only while it is on", () => {
+  it("offers the icon switch whenever a shutter is bound, and the glyph only while it is on", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
-    expect(names({ ...win, shutterEntity: "cover.s" } as Opening)).not.toContain("showShutterIcon");
+    const alone = { ...win, shutterEntity: "cover.s" } as Opening;
+    expect(names({ ...win, entity: "binary_sensor.win" } as Opening)).not.toContain("showShutterIcon");
+    // A shutter with no window contact behind it (issue #293): the switch is
+    // offered, off, and the glyph waits for it.
+    expect(names(alone)).toContain("showShutterIcon");
+    expect(names(alone)).not.toContain("shutterIcon");
+    expect(names({ ...alone, showShutterIcon: true } as Opening)).toContain("shutterIcon");
     expect(names(both)).toContain("showShutterIcon");
     expect(names(both)).toContain("shutterIcon");
     // Nothing drawn, nothing to restyle.
@@ -1678,8 +1684,13 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(names({ ...both, showShutterIcon: false } as Opening)).toContain("showShutterIcon");
   });
 
-  it("reads the switch back as on unless it was turned off", () => {
+  it("reads the switch back as its default unless it was turned the other way", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
+    const alone = { ...win, shutterEntity: "cover.s" } as Opening;
+    expect(openingForm(alone).data.showShutterIcon).toBe(false);
+    expect(openingForm({ ...alone, showShutterIcon: true } as Opening).data.showShutterIcon).toBe(
+      true
+    );
     expect(openingForm(both).data.showShutterIcon).toBe(true);
     expect(openingForm({ ...both, showShutterIcon: false } as Opening).data.showShutterIcon).toBe(
       false
@@ -1696,6 +1707,10 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(toPatch({ showShutterIcon: false })).toEqual({ showShutterIcon: false });
     expect(toPatch({ showShutterIcon: true })).toEqual({ showShutterIcon: undefined });
     expect(toPatch({ shutterIcon: "mdi:mine" })).toEqual({ shutterIcon: "mdi:mine" });
+    // A shutter alone defaults the other way, so only "on" is written (issue #293).
+    const alone = openingForm({ ...win, shutterEntity: "cover.s" } as Opening).toPatch;
+    expect(alone({ showShutterIcon: true })).toEqual({ showShutterIcon: true });
+    expect(alone({ showShutterIcon: false })).toEqual({ showShutterIcon: undefined });
     const cleared = openingForm({
       ...both,
       showShutterIcon: false,

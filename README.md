@@ -291,6 +291,10 @@ window, a `blind` → a slider, a `garage` or `shutter` → a roll-up); adjust a
   swung is still on screen saying so. The roll-up is the case that wants it — raised, its
   curtain has left the floor plane and only the coloured track remains. With a shutter
   bound too, the two badges take opposite faces of the wall.
+- **Shutter icon** — the same badge for the shutter's entity, and its dialog on a tap. On by
+  default when the opening has its own entity too, since it's how you find the second one.
+  Off for a shutter bound alone — switch it on for a roll-up shutter without a window
+  contact behind it, whose raised curtain leaves only its track line.
 - **Invert door animation** (**Invert window animation** on a window) — flip the
   open/closed interpretation (and the percentage) for sensors wired the other way. A bound
   shutter gets its own **Invert shutter animation**, since a reed contact on the panels
