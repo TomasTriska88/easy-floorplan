@@ -823,6 +823,15 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
             // skylight carrying `motion: slide` is harmless right up until the
             // moment it becomes a window and the slider wakes up. The sweep
             // has to run both ways or it only half works.
+            //
+            // `flipH` is the deliberate omission, in both directions. It is a
+            // mirror rather than a mechanism: on a wall opening it picks the
+            // hinge jamb or the slide direction, on a roof light it turns a
+            // symmetrical rectangle and so changes nothing anyone can see.
+            // Clearing it would mean a window turned into a skylight and back
+            // came home hinged on the other side, which is a worse surprise
+            // than the one it would prevent — there is nothing to prevent,
+            // because the flag cannot do any harm while it is a skylight.
             out.motion = undefined;
             out.sliderStyle = undefined;
             out.sashSpan = undefined;

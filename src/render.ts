@@ -5224,6 +5224,7 @@ export function renderSunlight(
       shadeId: `${id}-s${i}`,
       fadeId: `${id}-f${i}`,
       shadowMaskId: `${id}-k${i}`,
+      clipId: `${id}-c${i}`,
     };
     const f = clear(o);
     if (!(f > 0)) return undefined;
@@ -5392,15 +5393,22 @@ export function renderSunlight(
         <!-- Skylights come after the wall shade has been put back, each with
              only its OWN downwind walls restored over it. Every other wall in
              the plan is upwind of the roof light and so cannot shade it — see
-             downwindShadows above. Two skylights whose patches lie in each
-             other's
-             shadows would resolve by array order here rather than by which
-             light actually lands; a plan with that arrangement is a plan with
-             one roof light shining through another's floor, and it is not
-             worth a mask each to get right. -->
+             downwindShadows above.
+             Each one is CLIPPED to its own halo, and that is what keeps them
+             from interfering. Unclipped, a roof light's white restoration ran
+             the whole width of the canvas and landed on whatever a *later*
+             skylight had already punched — so a partition upwind of the lower
+             of two roof lights shaded it anyway, by being downwind of the
+             upper one, and swapping the two round in the openings array
+             changed the drawing.
+             Clipped, a skylight contributes nothing outside its own light, so
+             the only arrangement left where array order decides anything is
+             two patches genuinely overlapping — which is one roof light
+             shining through another's floor, and has no right answer to get
+             wrong. -->
         ${beams.map((b) =>
           b && b.sky
-            ? svg`<g>
+            ? svg`<g clip-path=${`url(#${b.clipId})`}>
                 <polygon points=${b.haloPoints} fill=${`url(#${b.haloShadeId})`} />
                 <polygon points=${b.points} fill=${`url(#${b.shadeId})`} />
                 ${b.shadows.map((p) => shadowPoly(p, "#fff"))}
@@ -5416,6 +5424,17 @@ export function renderSunlight(
         ${cover("#fff")}
         ${shadows.map((p) => shadowPoly(p, "#000"))}
       </mask>
+      <!-- The halo rectangle of each skylight, so its contribution to the
+           shade mask above can be confined to its own light. Same reason the
+           masks below are per-skylight: what one roof light does is nobody
+           else's business. -->
+      ${beams.map((b) =>
+        b && b.sky
+          ? svg`<clipPath id=${b.clipId} clipPathUnits="userSpaceOnUse">
+              <polygon points=${b.haloPoints} />
+            </clipPath>`
+          : nothing
+      )}
       <!-- …and one per skylight, carrying its downwind walls alone. A mask
            each rather than a shared one because "downwind" is measured from
            the roof light, so no two skylights have the same answer. -->

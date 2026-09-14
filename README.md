@@ -234,9 +234,12 @@ click anywhere inside a room and it stays where you put it. It is also the one o
 with two sizes, **Length** and **Width**, both settable in the toolbar before you place
 it. Left
 unbound it stays a static drawing. Bind an **Entity** — a contact `binary_sensor` or a
-`cover` — and the opening tracks its real state. The card reads the entity's HA
-`device_class` and picks a sensible `type` / `motion` for you (a `window` cover → a
-window, a `blind` → a slider, a `garage` or `shutter` → a roll-up); adjust afterwards.
+`cover` — and the opening tracks its real state. For a **wall** opening the card reads
+the entity's HA `device_class` and picks a sensible `type` / `motion` for you (a `window`
+cover → a window, a `blind` → a slider, a `garage` or `shutter` → a roll-up); adjust
+afterwards. A **skylight** is exempt, and has to be: Home Assistant has no roof-window
+class, so a velux binds to a `cover` with `device_class: window` — the very class that
+would turn it back into a wall opening. A type you chose by hand is never overruled.
 
 - **Open / closed** — open when the entity is `on` / `open`. A door's leaf swings around
   its hinge, a window's two leaves outward from the middle — or set **Sashes** to *Single*

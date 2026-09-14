@@ -447,6 +447,47 @@ describe("renderSunlight with a roof light in the plan", () => {
     expect(mask).toContain("<polygon");
   });
 
+  it("does not let one roof light shade another's patch", () => {
+    // Two roof lights either side of a partition, which is an ordinary house.
+    // The partition is downwind of the upper skylight and upwind of the lower
+    // one, so it may shade the first and must not touch the second. Sharing
+    // one shade mask it did anyway: the upper one's white restoration ran the
+    // full width of the canvas and landed on the patch the lower one had
+    // already punched. The tell was array order — the same plan drew two ways
+    // depending on which skylight came first.
+    const se = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+    const partition: Wall[] = [{ id: "p", x1: 40, y1: 210, x2: 360, y2: 210 }];
+    const upper = sky({ id: "up", x: 150, y: 120, length: 90, width: 56 });
+    const lower = sky({ id: "low", x: 150, y: 300, length: 90, width: 56 });
+    const drop = 400 * SUN_REACH * SKYLIGHT_DROP;
+    const markup = serialize(
+      renderSunlight(partition, [upper, lower], 400, 400, "sun", {
+        dir: se,
+        openAmount: () => 0,
+        shutterOpen: () => undefined,
+      })
+    );
+
+    // Each skylight's contribution to the shade mask is confined to its own
+    // halo. That is the fix, and it is an attribute rather than a coordinate,
+    // so this is the one thing worth asserting structurally.
+    const groups = [...markup.matchAll(/<g clip-path=url\(#(sun-c\d+)\)>/g)].map((m) => m[1]);
+    expect(groups).toEqual(["sun-c0", "sun-c1"]);
+
+    // …and confinement only helps if the two lights are actually apart, which
+    // is what makes the clip sufficient rather than merely present: the lower
+    // skylight's patch sits outside the upper one's halo, so nothing the upper
+    // one restores can reach it however the array is ordered.
+    const halo = (o: Opening) => skylightPatchPolygon(o, se, drop, 1, SKYLIGHT_SPREAD);
+    const patch = skylightPatchCenter(lower, se, drop);
+    expect(pointInPolygon(halo(upper), patch.x, patch.y)).toBe(false);
+
+    // The partition is upwind of the lower skylight, so its own mask carries
+    // nothing that covers its own patch either.
+    for (const p of shadowsOf(markup, "sun-k1"))
+      expect(pointInPolygon(p, patch.x, patch.y)).toBe(false);
+  });
+
   it("draws nothing at all for a skylight behind a closed blind", () => {
     // Nothing at all, rather than a layer at zero opacity: the whole point of
     // the blind is that a roof light behind a shut one is as dark as ceiling.
