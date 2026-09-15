@@ -326,11 +326,13 @@ openings:
 
 An **area** is a colored, named room polygon traced on top of your walls.
 
-Pick the **Area** tool and click each corner — points snap onto nearby wall corners and
-onto other areas' corners, so adjoining rooms share an exact boundary. After 3+ points,
-click the **first** point to close the shape (**Backspace** drops the last point,
+Choose the **Area** tool and either press-drag to make a finished rectangle in one
+gesture or click each corner for a custom polygon — points snap onto nearby wall corners
+and onto other areas' corners, so adjoining rooms share an exact boundary. After 3+
+points, click the **first** point to close the shape (**Backspace** drops the last point,
 **Escape** discards the outline). Drag inside the fill to move the room, or a corner
-handle to reshape it.
+handle to reshape it. Double-click a rectangle room's edge to cycle it through
+**wall → divider → none**.
 
 Selected, an area offers **Name** / **Show name**, a **color** and **Fill opacity**, and —
 once it's live — the same conditional coloring devices get: **Entity**, **Active color**,

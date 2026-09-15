@@ -109,6 +109,7 @@ import {
   itemLabelColor,
   areaLabelFontSize,
   wallStrokeStyle,
+  dividerStrokeStyle,
   normalizeOverlayScale,
   normalizeOverlayMinWidth,
   overlayLength,
@@ -1390,7 +1391,7 @@ export class FloorplanCard extends LitElement {
                       class="wall fp-wall ${isRailing(w) ? "railing" : ""}"
                       data-id=${cssIdent(w.id) ?? nothing}
                       mask=${`url(#${this._wallMaskId})`}
-                      style=${w.divider ? "stroke-width:2; stroke-dasharray:2 12; opacity:0.7;" : wallStrokeStyle(w.thickness, w.kind)}
+                      style=${w.divider ? dividerStrokeStyle() : wallStrokeStyle(w.thickness, w.kind)}
                       stroke-linecap="round" /></g>`
               )}
             <!-- Room outlines, above the walls they trace. An area polygon runs

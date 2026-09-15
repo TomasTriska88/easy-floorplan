@@ -19,6 +19,7 @@ import type {
   Area,
   AreaPoint,
   HaAreaInfo,
+  RectAreaSide,
   StateColorRule,
   OverlayScale,
   PaletteColor,
@@ -129,6 +130,7 @@ import {
   collectWatchedEntities,
   hassRenderInputsChanged,
   wallStrokeStyle,
+  dividerStrokeStyle,
   normalizeOverlayScale,
   normalizeOverlayMinWidth,
   overlayLength,
@@ -1726,7 +1728,7 @@ export class FloorplanCardEditor extends LitElement {
     points: AreaPoint[],
     delta: { dx: number; dy: number },
     areas: readonly Area[],
-    movingSide?: "top" | "right" | "bottom" | "left"
+    movingSide?: RectAreaSide
   ): { areas: Area[]; coupledIds: Set<string> } {
     let primaryPoints = points;
     const sharedReference = points;
@@ -1781,7 +1783,7 @@ export class FloorplanCardEditor extends LitElement {
     moving: Area,
     delta: { dx: number; dy: number },
     areas: readonly Area[],
-    movingSide: "top" | "right" | "bottom" | "left"
+    movingSide: RectAreaSide
   ): { areas: Area[]; coupledIds: Set<string>; delta: { dx: number; dy: number } } {
     const requested = this._coupleRectAreaSharedEdges(primaryId, moving.points, delta, areas, movingSide);
     if (!requested.coupledIds.size) return { ...requested, delta };
@@ -1903,7 +1905,7 @@ export class FloorplanCardEditor extends LitElement {
         moving,
         delta,
         f.areas ?? [],
-        ["top", "right", "bottom", "left"][idx] as "top" | "right" | "bottom" | "left"
+        RECT_AREA_SIDES[idx]!
       );
       const uncoupled = (coupled.areas ?? []).filter(
         (a) => a.id !== drag.primary.id && !coupled.coupledIds.has(a.id)
@@ -3465,6 +3467,12 @@ export class FloorplanCardEditor extends LitElement {
     const c = this._config;
     const floor = this._floor();
     const floors = c.floors ?? [];
+    const sideWallLookup = new Map<string, { area: Area; side: RectAreaSide; edgeIndex: number }>();
+    for (const area of floor.areas ?? []) {
+      for (const [edgeIndex, side] of RECT_AREA_SIDES.entries()) {
+        sideWallLookup.set(rectAreaWallId(area.id, side), { area, side, edgeIndex });
+      }
+    }
     // How the card will size this plan's badges and labels. The canvas honours
     // it so the editor previews the drawing rather than a version of it with
     // fixed-size furniture on top (issue #192): set a badge to 34 on a plan
@@ -3898,7 +3906,7 @@ export class FloorplanCardEditor extends LitElement {
               ${floor.furniture.map((f) => this._renderFurnitureSel(f))}
               ${renderWallMask(floor.openings, c.width, c.height, this._wallMaskId)}
               ${floor.walls.map((w) => this._renderWall(w))}
-              ${(floor.areas ?? []).flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {})).map((w) => this._renderWall(w))}
+              ${(floor.areas ?? []).flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {})).map((w) => this._renderWall(w, sideWallLookup.get(w.id)))}
               <!-- Room outlines, same layer position as the card so what you
                    place is what you get. Only a static borderColor draws here,
                    there being no hass to resolve a live color from — but the
@@ -4495,25 +4503,23 @@ export class FloorplanCardEditor extends LitElement {
     `;
   }
 
-  private _renderWall(w: Wall): TemplateResult {
+  private _renderWall(
+    w: Wall,
+    sideWallInfo?: { area: Area; side: RectAreaSide; edgeIndex: number }
+  ): TemplateResult {
     const selected = this._isSel("wall", w.id);
     // A pinned wall still *looks* selected — it is — but shows no endpoint
     // handles (issue #191): they would be drawn as grab targets that refuse
     // to grab, and their absence is the clearest signal on the canvas that
     // the wall is pinned.
     const handles = selected && !w.locked;
-    const sideWallInfo = (this._floor().areas ?? []).flatMap((area) =>
-      RECT_AREA_SIDES.map((side, edgeIndex) => ({ area, side, edgeIndex }))
-    ).find(({ area, side }) => rectAreaWallId(area.id, side) === w.id);
     const sideWallSide = sideWallInfo?.side;
     const sideWallIndex = sideWallInfo?.edgeIndex ?? -1;
     const sideWallToggle = !!sideWallInfo && !sideWallInfo.area.locked;
     const sideState = sideWallInfo?.area.sideWalls?.[sideWallSide!];
     const sideIsHorizontal = Math.abs(w.y1 - w.y2) < 0.001;
     const edgeCursorClass = sideIsHorizontal ? "ns" : "ew";
-    const style = w.divider
-      ? "stroke-width:2; stroke-dasharray:2 12; opacity:0.7;"
-      : wallStrokeStyle(w.thickness, w.kind);
+    const style = w.divider ? dividerStrokeStyle() : wallStrokeStyle(w.thickness, w.kind);
     return svg`
       <g>
         <line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}

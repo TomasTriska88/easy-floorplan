@@ -5,10 +5,13 @@ import type {
   Floor,
   RectAreaSide,
   RectAreaSideWallState,
+  RectAreaSideWalls,
   RenderHass,
   Wall,
 } from "./types";
-import { polygonCentroid, pointInPolygon, textLabel } from "./render";
+import { WALL_THICKNESS, polygonCentroid, pointInPolygon, textLabel } from "./render";
+
+const RECT_AREA_EPSILON = 0.001;
 
 /** Element kinds addressable by the editor's selection model. */
 export type SelKind = "wall" | "opening" | "item" | "text" | "furniture" | "tracker" | "area";
@@ -87,7 +90,7 @@ export function rectAreaEdgeResize(points: readonly AreaPoint[], edgeIndex: numb
   const current = points.map((p) => ({ ...p }));
   const start = edgeIndex % 4;
   const end = (edgeIndex + 1) % 4;
-  const isHorizontal = Math.abs(current[start]!.y - current[end]!.y) < 0.001;
+  const isHorizontal = Math.abs(current[start]!.y - current[end]!.y) < RECT_AREA_EPSILON;
   const next = current.map((p, i) => {
     if (i === start || i === end) {
       return isHorizontal ? { ...p, y: target.y } : { ...p, x: target.x };
@@ -98,12 +101,7 @@ export function rectAreaEdgeResize(points: readonly AreaPoint[], edgeIndex: numb
   const maxX = Math.max(...next.map((p) => p.x));
   const minY = Math.min(...next.map((p) => p.y));
   const maxY = Math.max(...next.map((p) => p.y));
-  return [
-    { x: minX, y: minY },
-    { x: maxX, y: minY },
-    { x: maxX, y: maxY },
-    { x: minX, y: maxY },
-  ];
+  return rectAreaPoints({ x0: minX, y0: minY, x1: maxX, y1: maxY });
 }
 
 function rectBounds(points: readonly AreaPoint[]): { minX: number; maxX: number; minY: number; maxY: number } {
@@ -164,14 +162,14 @@ export function rectAreaClamp(
 export function rectAreaSharedSides(
   points: readonly AreaPoint[],
   other: readonly AreaPoint[],
-  epsilon = 0.001
-): Array<"top" | "right" | "bottom" | "left"> {
+  epsilon = RECT_AREA_EPSILON
+): RectAreaSide[] {
   if (!isRectArea(points) || !isRectArea(other)) return [];
   const box = rectBounds(points);
   const otherBox = rectBounds(other);
   const overlapY = Math.min(box.maxY, otherBox.maxY) - Math.max(box.minY, otherBox.minY);
   const overlapX = Math.min(box.maxX, otherBox.maxX) - Math.max(box.minX, otherBox.minX);
-  const out: Array<"top" | "right" | "bottom" | "left"> = [];
+  const out: RectAreaSide[] = [];
 
   if (Math.abs(box.maxX - otherBox.minX) < epsilon && overlapY > epsilon) out.push("right");
   if (Math.abs(box.minX - otherBox.maxX) < epsilon && overlapY > epsilon) out.push("left");
@@ -193,27 +191,27 @@ export function rectAreaSharedEdgeCouple(
   const overlapY = Math.min(box.maxY, otherBox.maxY) - Math.max(box.minY, otherBox.minY);
   const overlapX = Math.min(box.maxX, otherBox.maxX) - Math.max(box.minX, otherBox.minX);
 
-  const movingHorizontally = Math.abs(delta.dx) > 0.001;
-  const movingVertically = Math.abs(delta.dy) > 0.001;
+  const movingHorizontally = Math.abs(delta.dx) > RECT_AREA_EPSILON;
+  const movingVertically = Math.abs(delta.dy) > RECT_AREA_EPSILON;
   const shareLeft =
     (movingSide === undefined || movingSide === "right") &&
-    Math.abs(box.maxX - otherBox.minX) < 0.001 &&
-    overlapY > 0.001 &&
+    Math.abs(box.maxX - otherBox.minX) < RECT_AREA_EPSILON &&
+    overlapY > RECT_AREA_EPSILON &&
     movingHorizontally;
   const shareRight =
     (movingSide === undefined || movingSide === "left") &&
-    Math.abs(box.minX - otherBox.maxX) < 0.001 &&
-    overlapY > 0.001 &&
+    Math.abs(box.minX - otherBox.maxX) < RECT_AREA_EPSILON &&
+    overlapY > RECT_AREA_EPSILON &&
     movingHorizontally;
   const shareTop =
     (movingSide === undefined || movingSide === "bottom") &&
-    Math.abs(box.maxY - otherBox.minY) < 0.001 &&
-    overlapX > 0.001 &&
+    Math.abs(box.maxY - otherBox.minY) < RECT_AREA_EPSILON &&
+    overlapX > RECT_AREA_EPSILON &&
     movingVertically;
   const shareBottom =
     (movingSide === undefined || movingSide === "top") &&
-    Math.abs(box.minY - otherBox.maxY) < 0.001 &&
-    overlapX > 0.001 &&
+    Math.abs(box.minY - otherBox.maxY) < RECT_AREA_EPSILON &&
+    overlapX > RECT_AREA_EPSILON &&
     movingVertically;
 
   if (!shareLeft && !shareRight && !shareTop && !shareBottom) return undefined;
@@ -275,7 +273,7 @@ export function rectAreaSideWallNext(
 export function rectAreaSideWalls(
   areaId: string,
   points: readonly AreaPoint[],
-  sideWalls: Partial<Record<RectAreaSide, RectAreaSideWallState>> = {}
+  sideWalls: RectAreaSideWalls = {}
 ): Wall[] {
   if (!isRectArea(points)) return [];
   const [topLeft, topRight, bottomRight, bottomLeft] = points;
@@ -292,7 +290,7 @@ export function rectAreaSideWalls(
       const base = {
         id: rectAreaWallId(areaId, side),
         ...sides[side],
-        thickness: 8,
+        thickness: WALL_THICKNESS,
       };
       return sideWalls[side] === "divider"
         ? { ...base, divider: true }
