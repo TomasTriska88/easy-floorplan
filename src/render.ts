@@ -1196,24 +1196,12 @@ export function renderGlowMask(
         <rect x=${-pad} y=${-pad} width=${width + pad * 2} height=${height + pad * 2}
               fill="white" />
         ${furniture.map((f) => {
-          const rot = f.angle ? `rotate(${f.angle} ${f.x} ${f.y})` : undefined;
-          // The symbol says which shape its outline is, so a round-bodied piece
-          // casts a round shadow. This used to be a hard-coded list of the three
-          // round types, kept in sync by hand with the same list in the glyph.
-          const roundBase = findSymbol(catalog, f.type)?.footprint === "ellipse";
           // A mask's luminance is its transmission, and the region is already
           // white ("all the light"). So furniture paints *black* at the share
           // it blocks, leaving the share it lets through.
           const blocked = 1 - FURNITURE_GLOW_TRANSMISSION;
 
-          return renderFurnitureMask(f, "#000", "#000", blocked);
-          // return renderSymbolParts(findSymbol(catalog, f.type) ?? FALLBACK_SYMBOL, f.w, f.h, "black")
-          // return buildSvgOutline(furniture);
-          return roundBase
-            ? svg`<ellipse cx=${f.x} cy=${f.y} rx=${f.w / 2} ry=${f.h / 2}
-                           fill="#000" fill-opacity=${blocked} transform=${rot ?? nothing} />`
-            : svg`<rect x=${f.x - f.w / 2} y=${f.y - f.h / 2} width=${f.w} height=${f.h}
-                        fill="#000" fill-opacity=${blocked} transform=${rot ?? nothing} />`;
+          return renderFurnitureMask(f, "#000", "#000", blocked, catalog);
         })}
       </mask>
     </defs>`;
