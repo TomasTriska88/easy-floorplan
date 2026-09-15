@@ -250,6 +250,32 @@ For the roof **hatch** — a loft door, a smoke vent, a lantern with a solid fla
 
 See [Skylights](lighting.md#skylights) for where that light lands.
 
+## Balcony railings
+
+*"Allow a wall in the floor plan to be marked as belonging to a balcony, rather than being
+treated as a full-height wall."* (issue #182)
+
+Every line the card draws used to be a wall, and walls stop light. A balcony drawn with
+walls came out as a sealed box: its lamp stopped dead at the edge, and the railing stood
+between the sun and the balcony door behind it, so no sunlight ever came in that way.
+
+Set a wall's **Kind** to **Railing** and it is drawn thin, and light carries on over it —
+a lamp's pool spills past the edge, and the sun reaches the door again.
+
+![Before and after: a lamp pool clipped at the balcony edge, then spilling over a thin railing with sunlight entering the balcony door](img/balcony-railing.png)
+
+```yaml
+walls:
+  - { id: rail-west,  x1: 220, y1: 250, x2: 220, y2: 380, kind: railing }
+  - { id: rail-south, x1: 220, y1: 380, x2: 540, y2: 380, kind: railing }
+  - { id: rail-east,  x1: 540, y1: 380, x2: 540, y2: 250, kind: railing }
+```
+
+A railing also seals off no [dead space](behavior.md#dead-spaces): whatever it encloses is
+open to the air. It still takes doors and windows the way a wall does — a gate in a
+railing is a door — and an explicit **Thickness** is scaled down with it, so a railing
+stays thinner than the walls beside it.
+
 ## Where the floor switcher sits
 
 The floor buttons have always been pinned to the plan's top-right corner. That is a guess

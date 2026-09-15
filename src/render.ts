@@ -26,6 +26,7 @@ import type {
   Area,
   AreaPoint,
   Wall,
+  WallKind,
   RenderHass,
   HassEntity,
   FloorItem,
@@ -1595,8 +1596,46 @@ export function wallThickness(v: unknown): number {
  * untouched wall keeps following the skin and an explicit thickness
  * overrides it.
  */
-export function wallStrokeStyle(thickness: unknown): string {
-  return thickness === undefined ? "" : `stroke-width:${wallThickness(thickness)};`;
+export function wallStrokeStyle(thickness: unknown, kind?: WallKind): string {
+  if (thickness === undefined) return "";
+  const weight = wallThickness(thickness);
+  return kind === "railing"
+    ? `stroke-width:${Math.round(weight * RAILING_WEIGHT * 100) / 100};`
+    : `stroke-width:${weight};`;
+}
+
+/**
+ * A railing's stroke as a share of the wall weight it would otherwise have
+ * (issue #182) — thin enough to read as a barrier rather than structure next
+ * to the walls around it. The card's and the editor's `.wall.railing` rule
+ * applies the same share to a skin's weight.
+ */
+export const RAILING_WEIGHT = 0.4;
+
+/** Whether a wall is a railing rather than a full-height wall (issue #182). */
+export function isRailing(w: Pick<Wall, "kind">): boolean {
+  return w.kind === "railing";
+}
+
+const blockingWallsMemo = new WeakMap<readonly Wall[], Wall[]>();
+
+/**
+ * The walls that stand in the way of light and seal off space: all of them but
+ * the railings (issue #182).
+ *
+ * Hands back the **same array** when there are no railings, and the same
+ * filtered array for the same input after that. Both matter: the dead-space
+ * cache and `wallsLightPassesThrough`'s callers key on array identity, and this
+ * runs on every state change the card takes.
+ */
+export function wallsThatBlock(walls: readonly Wall[]): Wall[] {
+  if (!walls.some(isRailing)) return walls as Wall[];
+  let hit = blockingWallsMemo.get(walls);
+  if (!hit) {
+    hit = walls.filter((w) => !isRailing(w));
+    blockingWallsMemo.set(walls, hit);
+  }
+  return hit;
 }
 
 // ---- overlay scaling --------------------------------------------------------

@@ -73,6 +73,8 @@ import {
   openingHitSize,
   skylightWidth,
   wallsLightPassesThrough,
+  wallsThatBlock,
+  isRailing,
   glowClearSpan,
   openingHasTwoLeaves,
   secondLeafOf,
@@ -3326,14 +3328,14 @@ export class FloorplanCardEditor extends LitElement {
     // Dead spaces (issue #88) — derived from the walls and openings, so they
     // follow every edit without anything being stored.
     const deadSpaceRings = c.showDeadSpaces
-      ? deadSpacesCached(floor.walls, floor.openings)
+      ? deadSpacesCached(wallsThatBlock(floor.walls), floor.openings)
       : [];
     // Walls as light meets them (issue #143), same as the card — so dropping a
     // door into a wall spills the pool through it while you are still drawing.
     // Skipped entirely on a floor with no cast light, which is most of them:
     // this sits on the path of every keystroke and drag in the editor.
     const lightWalls = floor.items.some((it) => it.glow)
-      ? wallsLightPassesThrough(floor.walls, floor.openings, (o) => {
+      ? wallsLightPassesThrough(wallsThatBlock(floor.walls), floor.openings, (o) => {
           const amt = (id?: string) =>
             resolveOpeningAmount(o, id ? this.hass?.states[id] : undefined);
           // Same reading as the card, second leaf included (issue #145),
@@ -3351,7 +3353,7 @@ export class FloorplanCardEditor extends LitElement {
             o.shutterEntity ? shutterAmount(this.hass?.states[o.shutterEntity], o.shutterInvert) : undefined
           );
         })
-      : floor.walls;
+      : wallsThatBlock(floor.walls);
     const floorEmpty =
       !floor.walls.length &&
       !floor.openings.length &&
@@ -4349,9 +4351,9 @@ export class FloorplanCardEditor extends LitElement {
               class="wall-hit"
               @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "wall", id: w.id })} />
         <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
-              class="wall ${selected ? "selected" : ""}"
+              class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""}"
               mask=${`url(#${this._wallMaskId})`}
-              style=${wallStrokeStyle(w.thickness)} stroke-linecap="round" /></g>
+              style=${wallStrokeStyle(w.thickness, w.kind)} stroke-linecap="round" /></g>
         ${
           handles
             ? svg`
@@ -6436,6 +6438,10 @@ export class FloorplanCardEditor extends LitElement {
        leaving a fringe that runs through every opening (#203). */
     .fp-wall-neon {
       filter: var(--fp-skin-wall-filter, none);
+    }
+    /* Thin, as the card draws a railing (issue #182) — see the card's rule. */
+    line.wall.railing {
+      stroke-width: calc(var(--fp-skin-wall-width, 8) * 0.4);
     }
     line.wall.selected {
       stroke: var(--primary-color, #03a9f4);

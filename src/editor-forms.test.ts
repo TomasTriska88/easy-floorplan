@@ -1101,6 +1101,19 @@ describe("wallForm / projectForm / floorImageForm", () => {
     expect(form.toPatch({ thickness: 5 })).toEqual({ thickness: 5 });
   });
 
+  it("wall kind rests at Wall and writes down only a railing (issue #182)", () => {
+    const form = wallForm({ id: "w", x1: 0, y1: 0, x2: 1, y2: 1 });
+    expect(form.data.kind).toBe("wall");
+    expect(form.fields.map((f) => f.name)).toContain("kind");
+    expect(form.toPatch({ kind: "railing" })).toEqual({ kind: "railing" });
+    expect(form.toPatch({ kind: "wall" })).toEqual({ kind: undefined });
+    // Untouched fields stay out of the patch.
+    expect(form.toPatch({ x1: 5 })).toEqual({ x1: 5 });
+    expect(wallForm({ id: "w", x1: 0, y1: 0, x2: 1, y2: 1, kind: "railing" }).data.kind).toBe(
+      "railing"
+    );
+  });
+
   it("wall reflects a custom thickness in its data", () => {
     const d = wallForm({ id: "w", x1: 0, y1: 0, x2: 1, y2: 1, thickness: 10 }).data;
     expect(d.thickness).toBe(10);

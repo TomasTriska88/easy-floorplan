@@ -145,12 +145,17 @@ distorted anyway.
 
 ## Wall
 
-`{ id, x1, y1, x2, y2, thickness?, locked? }` — endpoints in virtual units.
+`{ id, x1, y1, x2, y2, thickness?, kind?, locked? }` — endpoints in virtual units.
 
 **`thickness`** is the stroke width in virtual units, set per wall by the **Thickness**
 slider in the editor. It defaults to `8` and is capped at `10`: a doorway is cut through
 the wall layer with a mask sized off the shared default, not per wall, so a wall drawn
 wider than the cap would not be fully cleared by its own door or window.
+
+**`kind`** is `wall` (the default, never written) or `railing` — the low edge of a
+balcony, terrace or gallery. A railing is drawn at 40% of the wall weight, lamp light and
+sunlight carry on over it, and it seals off no dead space. Editor: **Kind**. See
+[Balcony railings](appearance.md#balcony-railings).
 
 ## Opening (door / window / skylight)
 
