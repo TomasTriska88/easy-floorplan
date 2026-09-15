@@ -2139,11 +2139,13 @@ describe("every field lands in exactly one panel group", () => {
       "rotationPortrait",
       "rotationLandscape",
       "overlayScale",
+      "overlayMinWidth",
       "compactHeader",
       "zoomedOverlayScale",
     ];
     const DEVICES = ["offlineStyle"];
-    const cfg = { type: "t", width: 1000, height: 600 } as FloorplanCardConfig;
+    // Canvas units, so the conditional overlayMinWidth field is produced too.
+    const cfg = { type: "t", width: 1000, height: 600, overlayScale: "plan" } as FloorplanCardConfig;
     check(projectDisplayForm(cfg).fields, [DISPLAY, DEVICES], "project display");
     // Both slices resolve, and neither can emit the other's key.
     expect(formSlice(projectDisplayForm(cfg), DISPLAY).fields.map((f) => f.name)).toEqual(DISPLAY);
