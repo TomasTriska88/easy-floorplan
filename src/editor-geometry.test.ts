@@ -16,6 +16,7 @@ import {
   rectAreaPoints,
   rectAreaVertexResize,
   rectAreaEdgeResize,
+  rectAreaHasMinimumSize,
   rectAreaSideWalls,
   rectAreaAutoWallNext,
   rectAreaClamp,
@@ -388,6 +389,26 @@ describe("rectAreaEdgeResize", () => {
   });
 });
 
+describe("rectAreaHasMinimumSize", () => {
+  it("rejects a rectangle that has collapsed to a line", () => {
+    expect(rectAreaHasMinimumSize([
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 10 },
+      { x: 0, y: 10 },
+    ])).toBe(false);
+  });
+
+  it("accepts a positive-size rectangle", () => {
+    expect(rectAreaHasMinimumSize([
+      { x: 0, y: 0 },
+      { x: 1, y: 0 },
+      { x: 1, y: 10 },
+      { x: 0, y: 10 },
+    ])).toBe(true);
+  });
+});
+
 describe("rectAreaClamp", () => {
   it("stops a rectangle at a neighbor edge instead of intersecting it", () => {
     const moving = [{ x: 30, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 20 }, { x: 30, y: 20 }];
@@ -433,6 +454,12 @@ describe("rectAreaSharedSides", () => {
     const partial = [{ x: 20, y: 5 }, { x: 40, y: 5 }, { x: 40, y: 15 }, { x: 20, y: 15 }];
     expect(rectAreaSharedSides(a, partial)).toEqual(["right"]);
     expect(rectAreaSharedSides(partial, a)).toEqual(["left"]);
+  });
+
+  it("ignores non-rectangle areas", () => {
+    const rectangle = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const polygon = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 30, y: 5 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    expect(rectAreaSharedSides(rectangle, polygon)).toEqual([]);
   });
 });
 
@@ -571,6 +598,12 @@ describe("rectAreaSharedEdgeCouple", () => {
     expect(rectAreaSharedEdgeCouple(a, b, { dx: 0, dy: 5 })).toBeUndefined();
   });
 
+  it("does not couple a rectangle to a polygon sharing its bounds", () => {
+    const rectangle = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
+    const polygon = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 30, y: 5 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
+    expect(rectAreaSharedEdgeCouple(rectangle, polygon, { dx: 5, dy: 0 })).toBeUndefined();
+  });
+
   it("does not couple a shared edge when there is no effective movement", () => {
     const a = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 10 }, { x: 0, y: 10 }];
     const b = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 10 }, { x: 20, y: 10 }];
@@ -606,6 +639,15 @@ describe("rectAreaSharedEdgeCouple", () => {
         { x: 25, y: 15 },
       ],
     });
+  });
+
+  it("only couples the edge that is being resized", () => {
+    const center = [{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }];
+    const left = [{ x: -20, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 20 }, { x: -20, y: 20 }];
+    const right = [{ x: 20, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 20 }, { x: 20, y: 20 }];
+
+    expect(rectAreaSharedEdgeCouple(center, left, { dx: 5, dy: 0 }, "right")).toBeUndefined();
+    expect(rectAreaSharedEdgeCouple(center, right, { dx: 5, dy: 0 }, "right")).toBeDefined();
   });
 
   it("couples a long edge to two shorter adjacent rectangles", () => {
@@ -684,10 +726,16 @@ describe("rectAreaAutoWallNext", () => {
 describe("rectAreaSideWalls", () => {
   it("creates wall or divider segments for configured rectangle edges", () => {
     const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
-    expect(rectAreaSideWalls(pts, { top: "wall", right: "divider" })).toEqual([
-      { id: "area-wall-top", x1: 0, y1: 0, x2: 10, y2: 0, thickness: 8 },
-      { id: "area-wall-right", x1: 10, y1: 0, x2: 10, y2: 10, thickness: 8, divider: true },
+    expect(rectAreaSideWalls("room", pts, { top: "wall", right: "divider" })).toEqual([
+      { id: "area-wall-room-top", x1: 0, y1: 0, x2: 10, y2: 0, thickness: 8 },
+      { id: "area-wall-room-right", x1: 10, y1: 0, x2: 10, y2: 10, thickness: 8, divider: true },
     ]);
+  });
+
+  it("scopes generated wall IDs to the owning room", () => {
+    const pts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }, { x: 0, y: 10 }];
+    expect(rectAreaSideWalls("kitchen", pts, { top: "wall" })[0]?.id).toBe("area-wall-kitchen-top");
+    expect(rectAreaSideWalls("hall", pts, { top: "wall" })[0]?.id).toBe("area-wall-hall-top");
   });
 });
 

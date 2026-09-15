@@ -1,3 +1,4 @@
+import { RECT_AREA_AUTO_WALL_SIDES } from "./types";
 import type {
   Area,
   AreaPoint,
@@ -49,29 +50,36 @@ export function rectAreaPoints(rect: Rect): AreaPoint[] {
   ];
 }
 
+/** Whether points use the normalized four-corner rectangle representation. */
+export function isRectArea(points: readonly AreaPoint[]): boolean {
+  if (points.length !== 4) return false;
+  const bounds = rectBounds(points);
+  return rectAreaPoints({
+    x0: bounds.minX,
+    y0: bounds.minY,
+    x1: bounds.maxX,
+    y1: bounds.maxY,
+  }).every((point, index) => point.x === points[index]!.x && point.y === points[index]!.y);
+}
+
+/** Smallest legal width or height for a rectangle room in virtual units. */
+export const MIN_RECT_AREA_SIZE = 1;
+
+export function rectAreaHasMinimumSize(
+  points: readonly AreaPoint[],
+  minimum = MIN_RECT_AREA_SIZE
+): boolean {
+  if (!isRectArea(points)) return false;
+  const bounds = rectBounds(points);
+  return bounds.maxX - bounds.minX >= minimum && bounds.maxY - bounds.minY >= minimum;
+}
+
 /** Resize a rectangle area by moving one corner and keeping the opposite corner fixed. */
 export function rectAreaVertexResize(points: readonly AreaPoint[], vertexIndex: number, target: AreaPoint): AreaPoint[] {
-  const current = points.map((p) => ({ ...p }));
-  const fixed = [0, 1, 2, 3].find((i) => i !== vertexIndex && i !== (vertexIndex + 2) % 4) ?? 0;
-  const anchor = current[fixed]!;
-  const moved = { ...target };
-  const out = current.map((p, i) => {
-    if (i === vertexIndex) return moved;
-    if (i === (vertexIndex + 2) % 4) return anchor;
-    if (i === 0 && fixed === 0) return anchor;
-    return p;
-  });
-
-  const minX = Math.min(...out.map((p) => p.x));
-  const maxX = Math.max(...out.map((p) => p.x));
-  const minY = Math.min(...out.map((p) => p.y));
-  const maxY = Math.max(...out.map((p) => p.y));
-  return [
-    { x: minX, y: minY },
-    { x: maxX, y: minY },
-    { x: maxX, y: maxY },
-    { x: minX, y: maxY },
-  ];
+  const fixedCorner = points[(vertexIndex + 2) % 4];
+  return fixedCorner
+    ? rectAreaPoints({ x0: fixedCorner.x, y0: fixedCorner.y, x1: target.x, y1: target.y })
+    : points.map((point) => ({ ...point }));
 }
 
 /** Resize a rectangle area by moving one edge and keeping the opposite edge fixed. */
@@ -153,95 +161,12 @@ export function rectAreaClamp(
   ];
 }
 
-type AreaDebugWindow = typeof globalThis & {
-  __EASY_FLOORPLAN_DEBUG__?: boolean;
-  easyFloorplanDebug?: {
-    enable: () => void;
-    disable: () => void;
-    toggle: () => boolean;
-    isEnabled: () => boolean;
-  };
-};
-
-const areaDebugWindow = globalThis as AreaDebugWindow;
-const areaDebugEnabled = (() => {
-  if (typeof process !== "undefined") {
-    const envValue = process.env?.EASY_FLOORPLAN_DEBUG;
-    if (envValue === "0" || envValue === "false") return false;
-    if (envValue === "1" || envValue === "true") return true;
-  }
-
-  if (areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ === false) return false;
-  if (areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ === true) return true;
-
-  if (typeof window !== "undefined") {
-    try {
-      const search = new URLSearchParams(window.location.search);
-      const queryValue = search.get("easy-floorplan-debug");
-      if (queryValue === "0" || queryValue === "false") return false;
-      if (queryValue === "1" || queryValue === "true") return true;
-      const saved = window.localStorage.getItem("easy-floorplan-debug");
-      if (saved === "0" || saved === "false") return false;
-      if (saved === "1" || saved === "true") return true;
-    } catch {
-      // Some browsers block storage access in restricted contexts; ignore and continue.
-    }
-  }
-
-  return true;
-})();
-
-const areaDebugSet = (enable: boolean): void => {
-  areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ = enable;
-  if (enable) {
-    console.log("[easy-floorplan:area] debug enabled");
-  }
-};
-
-if (typeof window !== "undefined" && !areaDebugWindow.easyFloorplanDebug) {
-  areaDebugWindow.easyFloorplanDebug = {
-    enable: () => {
-      areaDebugSet(true);
-      try {
-        window.localStorage.setItem("easy-floorplan-debug", "1");
-      } catch {
-        // Ignore storage restrictions.
-      }
-      return undefined;
-    },
-    disable: () => {
-      areaDebugSet(false);
-      try {
-        window.localStorage.setItem("easy-floorplan-debug", "0");
-      } catch {
-        // Ignore storage restrictions.
-      }
-      return undefined;
-    },
-    toggle: () => {
-      const next = !areaDebugWindow.__EASY_FLOORPLAN_DEBUG__;
-      areaDebugSet(next);
-      return next;
-    },
-    isEnabled: () => !!areaDebugWindow.__EASY_FLOORPLAN_DEBUG__,
-  };
-}
-
-if (areaDebugEnabled) {
-  areaDebugSet(true);
-  console.log("[easy-floorplan:area] startup debug banner: default on");
-}
-
-const areaDebugLog = (...args: unknown[]): void => {
-  if (!areaDebugWindow.__EASY_FLOORPLAN_DEBUG__ && !areaDebugEnabled) return;
-  console.log("[easy-floorplan:area]", JSON.stringify(args));
-};
-
 export function rectAreaSharedSides(
   points: readonly AreaPoint[],
   other: readonly AreaPoint[],
   epsilon = 0.001
 ): Array<"top" | "right" | "bottom" | "left"> {
+  if (!isRectArea(points) || !isRectArea(other)) return [];
   const box = rectBounds(points);
   const otherBox = rectBounds(other);
   const overlapY = Math.min(box.maxY, otherBox.maxY) - Math.max(box.minY, otherBox.minY);
@@ -259,8 +184,10 @@ export function rectAreaSharedSides(
 export function rectAreaSharedEdgeCouple(
   points: readonly AreaPoint[],
   other: readonly AreaPoint[],
-  delta: { dx: number; dy: number }
+  delta: { dx: number; dy: number },
+  movingSide?: RectAreaAutoWallSide
 ): { points: AreaPoint[]; other: AreaPoint[] } | undefined {
+  if (!isRectArea(points) || !isRectArea(other)) return undefined;
   const box = rectBounds(points);
   const otherBox = rectBounds(other);
   const overlapY = Math.min(box.maxY, otherBox.maxY) - Math.max(box.minY, otherBox.minY);
@@ -268,24 +195,26 @@ export function rectAreaSharedEdgeCouple(
 
   const movingHorizontally = Math.abs(delta.dx) > 0.001;
   const movingVertically = Math.abs(delta.dy) > 0.001;
-  const shareLeft = Math.abs(box.maxX - otherBox.minX) < 0.001 && overlapY > 0.001 && movingHorizontally;
-  const shareRight = Math.abs(box.minX - otherBox.maxX) < 0.001 && overlapY > 0.001 && movingHorizontally;
-  const shareTop = Math.abs(box.maxY - otherBox.minY) < 0.001 && overlapX > 0.001 && movingVertically;
-  const shareBottom = Math.abs(box.minY - otherBox.maxY) < 0.001 && overlapX > 0.001 && movingVertically;
-
-  areaDebugLog("rectAreaSharedEdgeCouple check", {
-    box,
-    otherBox,
-    delta,
-    overlapY,
-    overlapX,
-    movingHorizontally,
-    movingVertically,
-    shareLeft,
-    shareRight,
-    shareTop,
-    shareBottom,
-  });
+  const shareLeft =
+    (movingSide === undefined || movingSide === "right") &&
+    Math.abs(box.maxX - otherBox.minX) < 0.001 &&
+    overlapY > 0.001 &&
+    movingHorizontally;
+  const shareRight =
+    (movingSide === undefined || movingSide === "left") &&
+    Math.abs(box.minX - otherBox.maxX) < 0.001 &&
+    overlapY > 0.001 &&
+    movingHorizontally;
+  const shareTop =
+    (movingSide === undefined || movingSide === "bottom") &&
+    Math.abs(box.maxY - otherBox.minY) < 0.001 &&
+    overlapX > 0.001 &&
+    movingVertically;
+  const shareBottom =
+    (movingSide === undefined || movingSide === "top") &&
+    Math.abs(box.minY - otherBox.maxY) < 0.001 &&
+    overlapX > 0.001 &&
+    movingVertically;
 
   if (!shareLeft && !shareRight && !shareTop && !shareBottom) return undefined;
 
@@ -324,9 +253,7 @@ export function rectAreaSharedEdgeCouple(
     coupled[3] = { x: coupled[3]!.x, y: boundary };
   }
 
-  const result = { points: next, other: coupled };
-  areaDebugLog("rectAreaSharedEdgeCouple result", result);
-  return result;
+  return { points: next, other: coupled };
 }
 
 export function rectAreaAutoWallNext(
@@ -346,10 +273,11 @@ export function rectAreaAutoWallNext(
 }
 
 export function rectAreaSideWalls(
+  areaId: string,
   points: readonly AreaPoint[],
   autoWalls: Partial<Record<RectAreaAutoWallSide, RectAreaAutoWallState>> = {}
 ): Wall[] {
-  if (points.length < 4) return [];
+  if (!isRectArea(points)) return [];
   const [topLeft, topRight, bottomRight, bottomLeft] = points;
   const sides: Record<RectAreaAutoWallSide, { x1: number; y1: number; x2: number; y2: number }> = {
     top: { x1: topLeft.x, y1: topLeft.y, x2: topRight.x, y2: topRight.y },
@@ -358,11 +286,11 @@ export function rectAreaSideWalls(
     left: { x1: bottomLeft.x, y1: bottomLeft.y, x2: topLeft.x, y2: topLeft.y },
   };
 
-  return (Object.keys(sides) as RectAreaAutoWallSide[])
+  return RECT_AREA_AUTO_WALL_SIDES
     .filter((side) => autoWalls[side] === "wall" || autoWalls[side] === "divider")
     .map((side) => {
       const base = {
-        id: `area-wall-${side}`,
+        id: rectAreaWallId(areaId, side),
         ...sides[side],
         thickness: 8,
       };
@@ -370,6 +298,10 @@ export function rectAreaSideWalls(
         ? { ...base, divider: true }
         : base;
     });
+}
+
+export function rectAreaWallId(areaId: string, side: RectAreaAutoWallSide): string {
+  return `area-wall-${areaId}-${side}`;
 }
 
 type WallSegment = Pick<Wall, "x1" | "y1" | "x2" | "y2">;

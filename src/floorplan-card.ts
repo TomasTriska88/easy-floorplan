@@ -1384,7 +1384,7 @@ export class FloorplanCard extends LitElement {
                 : nothing
             }
             ${renderWallMask(active.openings, c.width, c.height, this._wallMaskId)}
-            ${[...active.walls, ...active.areas.flatMap((a) => rectAreaSideWalls(a.points, a.autoWalls ?? {}))].map(
+            ${[...active.walls, ...active.areas.flatMap((a) => rectAreaSideWalls(a.id, a.points, a.autoWalls ?? {}))].map(
                 (w) => svg`
                 <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
                       class="wall fp-wall ${isRailing(w) ? "railing" : ""}"
