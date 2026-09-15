@@ -109,6 +109,7 @@ import {
   isRailing,
   RAILING_WEIGHT,
   normalizeOverlayScale,
+  normalizeOverlayMinWidth,
   overlayLength,
   hassRenderInputsChanged,
   collectNamedEntities,
@@ -6821,4 +6822,17 @@ describe("railings (issue #182)", () => {
     expect(wallStrokeStyle(5, "railing")).toBe(`stroke-width:${5 * RAILING_WEIGHT};`);
     expect(wallStrokeStyle(5, "wall")).toBe("stroke-width:5;");
   });
+});
+
+describe("minimum overlay width", () => {
+  it("accepts numeric widths and caps them at the editor maximum", () => {
+    expect(normalizeOverlayMinWidth(800)).toBe(800);
+    expect(normalizeOverlayMinWidth("800")).toBe(800);
+    expect(normalizeOverlayMinWidth(8000)).toBe(4000);
+  });
+  it.each([undefined, null, false, true, {}, [], "", "wide", 0, -1, Infinity, NaN])(
+    "ignores invalid or disabled value %s", (value) => {
+      expect(normalizeOverlayMinWidth(value)).toBeUndefined();
+    }
+  );
 });
