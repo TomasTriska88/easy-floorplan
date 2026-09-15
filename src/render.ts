@@ -3389,18 +3389,6 @@ export function shutterMarkPoint(
 }
 
 /**
- * How far off centre a badge has to sit to clear the symbol it describes.
- *
- * {@link SHUTTER_MARK_OFFSET} for anything in a wall, whose symbol is a band
- * a wall thick and whose shutter reaches a little past that — the offset is
- * measured to clear exactly those. A **skylight** has no such fixed extent: it
- * is a rectangle as wide as its author drew it, and a badge 22 units off its
- * centre lands squarely on the glass of any roof light bigger than a hatch,
- * covering the very thing it is reporting on and stealing its taps.
- *
- * So the skylight's is measured from its own edge instead, which keeps the
- * badge the same distance clear of the symbol at every size.
- */
 /**
  * The rectangle a transparent hit target has to cover for `o`, centred on it
  * and turned by its own `angle`.
@@ -3422,6 +3410,19 @@ export function openingHitSize(
   };
 }
 
+/**
+ * How far off centre a badge has to sit to clear the symbol it describes.
+ *
+ * {@link SHUTTER_MARK_OFFSET} for anything in a wall, whose symbol is a band
+ * a wall thick and whose shutter reaches a little past that — the offset is
+ * measured to clear exactly those. A **skylight** has no such fixed extent: it
+ * is a rectangle as wide as its author drew it, and a badge 22 units off its
+ * centre lands squarely on the glass of any roof light bigger than a hatch,
+ * covering the very thing it is reporting on and stealing its taps.
+ *
+ * So the skylight's is measured from its own edge instead, which keeps the
+ * badge the same distance clear of the symbol at every size.
+ */
 export function openingMarkOffset(
   o: Pick<Opening, "type" | "length" | "width">,
 ): number {
@@ -3429,22 +3430,35 @@ export function openingMarkOffset(
 }
 
 /**
- * Whether an opening earns a shutter badge: both entities bound, and not
- * switched off (issue #74 follow-up).
+ * Whether an opening's shutter badge is shown when nobody has said: on with
+ * both entities bound, off with the shutter alone (issue #293).
  *
- * The badge exists because the second entity is otherwise invisible — the plan
- * draws the shutter, but nothing says the symbol answers to two different
- * things, so press-and-hold is a gesture you would have to already know about
- * to find. With one entity bound there is no second thing to reveal.
+ * With both bound the badge exists because the second entity is otherwise
+ * invisible — the plan draws the shutter, but nothing says the symbol answers
+ * to two different things, so press-and-hold is a gesture you would have to
+ * already know about to find. A discoverability aid nobody switches on helps
+ * nobody, so it is on.
  *
- * On by default, because a discoverability aid nobody switches on helps
- * nobody. Off is for the plan where every window has a shutter and the icons
- * become the loudest thing on it; the gestures keep working either way.
+ * With the shutter alone there is no second thing to reveal, so it is opt-in,
+ * on the terms of the opening's own badge ({@link hasOpeningMark}): a raised
+ * roll-up leaves nothing on the plan but its track line. Defaulting it on here
+ * would have put an icon beside every shutter-only window on plans that never
+ * asked for one.
+ */
+export function shutterMarkDefault(o: Pick<Opening, "entity">): boolean {
+  return !!o.entity;
+}
+
+/**
+ * Whether an opening draws a shutter badge: a shutter bound, and the badge
+ * switched on — see {@link shutterMarkDefault} for what unset means (issue #74
+ * follow-up). Off is for the plan where every window has a shutter and the
+ * icons become the loudest thing on it; the gestures keep working either way.
  */
 export function hasShutterMark(
   o: Pick<Opening, "entity" | "shutterEntity" | "showShutterIcon">,
 ): boolean {
-  return !!(o.entity && o.shutterEntity) && (o.showShutterIcon ?? true);
+  return !!o.shutterEntity && (o.showShutterIcon ?? shutterMarkDefault(o));
 }
 
 /** Last-resort shutter glyphs, for an entity with no device class of its own. */

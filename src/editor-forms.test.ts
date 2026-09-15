@@ -1681,9 +1681,15 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(defaultOf({ ...win, shutterEntity: "cover.s" } as Opening, "hold_action")).toBe("none");
   });
 
-  it("offers the icon switch only with two entities, and the glyph only while it is on", () => {
+  it("offers the icon switch whenever a shutter is bound, and the glyph only while it is on", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
-    expect(names({ ...win, shutterEntity: "cover.s" } as Opening)).not.toContain("showShutterIcon");
+    const alone = { ...win, shutterEntity: "cover.s" } as Opening;
+    expect(names({ ...win, entity: "binary_sensor.win" } as Opening)).not.toContain("showShutterIcon");
+    // A shutter with no window contact behind it (issue #293): the switch is
+    // offered, off, and the glyph waits for it.
+    expect(names(alone)).toContain("showShutterIcon");
+    expect(names(alone)).not.toContain("shutterIcon");
+    expect(names({ ...alone, showShutterIcon: true } as Opening)).toContain("shutterIcon");
     expect(names(both)).toContain("showShutterIcon");
     expect(names(both)).toContain("shutterIcon");
     // Nothing drawn, nothing to restyle.
@@ -1691,8 +1697,13 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(names({ ...both, showShutterIcon: false } as Opening)).toContain("showShutterIcon");
   });
 
-  it("reads the switch back as on unless it was turned off", () => {
+  it("reads the switch back as its default unless it was turned the other way", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
+    const alone = { ...win, shutterEntity: "cover.s" } as Opening;
+    expect(openingForm(alone).data.showShutterIcon).toBe(false);
+    expect(openingForm({ ...alone, showShutterIcon: true } as Opening).data.showShutterIcon).toBe(
+      true
+    );
     expect(openingForm(both).data.showShutterIcon).toBe(true);
     expect(openingForm({ ...both, showShutterIcon: false } as Opening).data.showShutterIcon).toBe(
       false
@@ -1706,9 +1717,20 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
   it("writes down only the off switch, and drops both with the shutter", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
     const { toPatch } = openingForm(both);
-    expect(toPatch({ showShutterIcon: false })).toEqual({ showShutterIcon: false });
+    // Off takes the glyph override with it, as Show icon takes `icon`.
+    expect(toPatch({ showShutterIcon: false })).toEqual({
+      showShutterIcon: false,
+      shutterIcon: undefined,
+    });
     expect(toPatch({ showShutterIcon: true })).toEqual({ showShutterIcon: undefined });
     expect(toPatch({ shutterIcon: "mdi:mine" })).toEqual({ shutterIcon: "mdi:mine" });
+    // A shutter alone defaults the other way, so only "on" is written (issue #293).
+    const alone = openingForm({ ...win, shutterEntity: "cover.s" } as Opening).toPatch;
+    expect(alone({ showShutterIcon: true })).toEqual({ showShutterIcon: true });
+    expect(alone({ showShutterIcon: false })).toEqual({
+      showShutterIcon: undefined,
+      shutterIcon: undefined,
+    });
     const cleared = openingForm({
       ...both,
       showShutterIcon: false,
@@ -1716,6 +1738,71 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     } as Opening).toPatch({ shutterEntity: undefined });
     expect(cleared.showShutterIcon).toBeUndefined();
     expect(cleared.shutterIcon).toBeUndefined();
+  });
+
+  it("judges the stored switch against the entity the patch leaves behind (#304 review)", () => {
+    const aloneOn = { ...win, shutterEntity: "cover.s", showShutterIcon: true } as Opening;
+    const bothOff = {
+      ...win,
+      entity: "binary_sensor.win",
+      shutterEntity: "cover.s",
+      showShutterIcon: false,
+    } as Opening;
+    // Binding the window contact makes "on" the default, so the stored true goes.
+    expect(openingForm(aloneOn).toPatch({ entity: "binary_sensor.win" })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: undefined,
+    });
+    // Clearing it makes "off" the default, so the stored false goes.
+    expect(openingForm(bothOff).toPatch({ entity: undefined })).toMatchObject({
+      entity: undefined,
+      showShutterIcon: undefined,
+    });
+    // A stored answer that still differs from the new default is left alone.
+    expect(
+      openingForm({ ...aloneOn, showShutterIcon: false } as Opening).toPatch({
+        entity: "binary_sensor.win",
+      })
+    ).toEqual({ entity: "binary_sensor.win" });
+    // Both in one consolidated patch: the switch is judged by the new entity.
+    const alone = openingForm({ ...win, shutterEntity: "cover.s" } as Opening);
+    expect(alone.toPatch({ entity: "binary_sensor.win", showShutterIcon: true })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: undefined,
+    });
+    expect(alone.toPatch({ entity: "binary_sensor.win", showShutterIcon: false })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: false,
+      shutterIcon: undefined,
+    });
+  });
+
+  it("drops the shutter glyph override with a badge the patch hides (#304 review)", () => {
+    const both = {
+      ...win,
+      entity: "binary_sensor.win",
+      shutterEntity: "cover.s",
+      shutterIcon: "mdi:mine",
+    } as Opening;
+    // Switched off, and switched off in the same breath as a new glyph: off wins.
+    expect(openingForm(both).toPatch({ showShutterIcon: false }).shutterIcon).toBeUndefined();
+    expect(
+      openingForm(both).toPatch({ showShutterIcon: false, shutterIcon: "mdi:other" })
+    ).toMatchObject({ shutterIcon: undefined });
+    // The contact cleared from under a badge that was only on by default: it
+    // hides, so the glyph goes.
+    const cleared = openingForm(both).toPatch({ entity: undefined });
+    expect("shutterIcon" in cleared && cleared.shutterIcon === undefined).toBe(true);
+    // …but not from under one switched on explicitly, which stays shown.
+    expect(
+      openingForm({ ...both, showShutterIcon: true } as Opening).toPatch({ entity: undefined })
+    ).not.toHaveProperty("shutterIcon");
+    // Turning it on, or binding a contact that shows it, leaves the glyph alone.
+    expect(openingForm(both).toPatch({ showShutterIcon: true })).not.toHaveProperty("shutterIcon");
+    expect(
+      openingForm({ ...win, shutterEntity: "cover.s", showShutterIcon: true, shutterIcon: "mdi:mine" } as Opening)
+        .toPatch({ entity: "binary_sensor.win" })
+    ).not.toHaveProperty("shutterIcon");
   });
 
   it("offers the tap target only with two entities to choose between", () => {
