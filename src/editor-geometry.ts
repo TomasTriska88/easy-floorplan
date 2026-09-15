@@ -1,10 +1,10 @@
-import { RECT_AREA_AUTO_WALL_SIDES } from "./types";
+import { RECT_AREA_SIDES } from "./types";
 import type {
   Area,
   AreaPoint,
   Floor,
-  RectAreaAutoWallSide,
-  RectAreaAutoWallState,
+  RectAreaSide,
+  RectAreaSideWallState,
   RenderHass,
   Wall,
 } from "./types";
@@ -185,7 +185,7 @@ export function rectAreaSharedEdgeCouple(
   points: readonly AreaPoint[],
   other: readonly AreaPoint[],
   delta: { dx: number; dy: number },
-  movingSide?: RectAreaAutoWallSide
+  movingSide?: RectAreaSide
 ): { points: AreaPoint[]; other: AreaPoint[] } | undefined {
   if (!isRectArea(points) || !isRectArea(other)) return undefined;
   const box = rectBounds(points);
@@ -256,9 +256,9 @@ export function rectAreaSharedEdgeCouple(
   return { points: next, other: coupled };
 }
 
-export function rectAreaAutoWallNext(
-  state: RectAreaAutoWallState | undefined
-): RectAreaAutoWallState {
+export function rectAreaSideWallNext(
+  state: RectAreaSideWallState | undefined
+): RectAreaSideWallState {
   switch (state) {
     case undefined:
     case "none":
@@ -275,32 +275,32 @@ export function rectAreaAutoWallNext(
 export function rectAreaSideWalls(
   areaId: string,
   points: readonly AreaPoint[],
-  autoWalls: Partial<Record<RectAreaAutoWallSide, RectAreaAutoWallState>> = {}
+  sideWalls: Partial<Record<RectAreaSide, RectAreaSideWallState>> = {}
 ): Wall[] {
   if (!isRectArea(points)) return [];
   const [topLeft, topRight, bottomRight, bottomLeft] = points;
-  const sides: Record<RectAreaAutoWallSide, { x1: number; y1: number; x2: number; y2: number }> = {
+  const sides: Record<RectAreaSide, { x1: number; y1: number; x2: number; y2: number }> = {
     top: { x1: topLeft.x, y1: topLeft.y, x2: topRight.x, y2: topRight.y },
     right: { x1: topRight.x, y1: topRight.y, x2: bottomRight.x, y2: bottomRight.y },
     bottom: { x1: bottomRight.x, y1: bottomRight.y, x2: bottomLeft.x, y2: bottomLeft.y },
     left: { x1: bottomLeft.x, y1: bottomLeft.y, x2: topLeft.x, y2: topLeft.y },
   };
 
-  return RECT_AREA_AUTO_WALL_SIDES
-    .filter((side) => autoWalls[side] === "wall" || autoWalls[side] === "divider")
+  return RECT_AREA_SIDES
+    .filter((side) => sideWalls[side] === "wall" || sideWalls[side] === "divider")
     .map((side) => {
       const base = {
         id: rectAreaWallId(areaId, side),
         ...sides[side],
         thickness: 8,
       };
-      return autoWalls[side] === "divider"
+      return sideWalls[side] === "divider"
         ? { ...base, divider: true }
         : base;
     });
 }
 
-export function rectAreaWallId(areaId: string, side: RectAreaAutoWallSide): string {
+export function rectAreaWallId(areaId: string, side: RectAreaSide): string {
   return `area-wall-${areaId}-${side}`;
 }
 

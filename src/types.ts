@@ -1152,16 +1152,17 @@ export interface AreaPoint {
   y: number;
 }
 
-export const RECT_AREA_AUTO_WALL_SIDES = ["top", "right", "bottom", "left"] as const;
-export type RectAreaAutoWallSide = (typeof RECT_AREA_AUTO_WALL_SIDES)[number];
-export type RectAreaAutoWallState = "none" | "wall" | "divider";
+export const RECT_AREA_SIDES = ["top", "right", "bottom", "left"] as const;
+export type RectAreaSide = (typeof RECT_AREA_SIDES)[number];
+export type RectAreaSideWallState = "none" | "wall" | "divider";
 
 /**
- * Rectangle room auto walls: each side can be left alone, turned into a wall,
- * or drawn as a divider line. The object is optional so polygon room areas
- * and older YAML remain unchanged.
+ * Rectangle room side walls: each side can be left alone, turned into a wall,
+ * or drawn as a divider line (toggled by double-clicking the edge in the
+ * editor). The object is optional so polygon room areas and older YAML
+ * remain unchanged.
  */
-export type RectAreaAutoWalls = Partial<Record<RectAreaAutoWallSide, RectAreaAutoWallState>>;
+export type RectAreaSideWalls = Partial<Record<RectAreaSide, RectAreaSideWallState>>;
 
 /**
  * A named room polygon, drawn point-by-point in the editor and closed by
@@ -1212,11 +1213,12 @@ export interface Area {
    */
   haArea?: string;
   /**
-   * Runtime-only rectangle edge state for generated room walls/dividers. The
-   * editor toggles these on the fly without exposing them as a user-facing
-   * config field.
+   * Per-side wall/divider override for rectangle rooms, toggled by
+   * double-clicking an edge in the editor. Persisted like any other field —
+   * the rendered wall/divider comes from this, not from a separate `walls`
+   * entry.
    */
-  autoWalls?: RectAreaAutoWalls;
+  sideWalls?: RectAreaSideWalls;
   /**
    * With `haArea` linked, scope the entity picker (for devices placed inside
    * this polygon) to that HA area's entities. Default true. Has no effect

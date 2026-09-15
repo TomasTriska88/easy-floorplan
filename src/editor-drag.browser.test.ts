@@ -342,7 +342,7 @@ describe("editor drag", () => {
     edge.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, composed: true, cancelable: true }));
     await ed.updateComplete;
 
-    expect((ed as any)._floor().areas[0].autoWalls?.top).toBe("wall");
+    expect((ed as any)._floor().areas[0].sideWalls?.top).toBe("wall");
     document.body.innerHTML = "";
   });
 
@@ -382,15 +382,15 @@ describe("editor drag", () => {
     expect(edgeTop).toBeTruthy();
     edgeTop!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, composed: true, cancelable: true }));
     await ed.updateComplete;
-    expect((ed as any)._floor().areas[0].autoWalls?.top).toBe("wall");
+    expect((ed as any)._floor().areas[0].sideWalls?.top).toBe("wall");
 
     edgeTop!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, composed: true, cancelable: true }));
     await ed.updateComplete;
-    expect((ed as any)._floor().areas[0].autoWalls?.top).toBe("divider");
+    expect((ed as any)._floor().areas[0].sideWalls?.top).toBe("divider");
 
     edgeTop!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, composed: true, cancelable: true }));
     await ed.updateComplete;
-    expect((ed as any)._floor().areas[0].autoWalls?.top).toBeUndefined();
+    expect((ed as any)._floor().areas[0].sideWalls?.top).toBeUndefined();
 
     document.body.innerHTML = "";
   });

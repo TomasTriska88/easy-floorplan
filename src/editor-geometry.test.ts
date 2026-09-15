@@ -18,7 +18,7 @@ import {
   rectAreaEdgeResize,
   rectAreaHasMinimumSize,
   rectAreaSideWalls,
-  rectAreaAutoWallNext,
+  rectAreaSideWallNext,
   rectAreaClamp,
   rectAreaSharedEdgeCouple,
   rectAreaSharedSides,
@@ -714,12 +714,12 @@ describe("rectAreaSharedEdgeCouple", () => {
   });
 });
 
-describe("rectAreaAutoWallNext", () => {
+describe("rectAreaSideWallNext", () => {
   it("cycles edge states none → wall → divider → none", () => {
-    expect(rectAreaAutoWallNext(undefined)).toBe("wall");
-    expect(rectAreaAutoWallNext("wall")).toBe("divider");
-    expect(rectAreaAutoWallNext("divider")).toBe("none");
-    expect(rectAreaAutoWallNext("none")).toBe("wall");
+    expect(rectAreaSideWallNext(undefined)).toBe("wall");
+    expect(rectAreaSideWallNext("wall")).toBe("divider");
+    expect(rectAreaSideWallNext("divider")).toBe("none");
+    expect(rectAreaSideWallNext("none")).toBe("wall");
   });
 });
 

@@ -59,7 +59,7 @@ import {
   trackerPresenceDetected,
   uid,
   DEFAULT_GLOW_RADIUS,
-  RECT_AREA_AUTO_WALL_SIDES,
+  RECT_AREA_SIDES,
 } from "./types";
 import {
   WALL_THICKNESS,
@@ -160,7 +160,7 @@ import {
   layoutPointsInPolygon,
   nearestAreaSnapPoint,
   nearestCorner,
-  rectAreaAutoWallNext,
+  rectAreaSideWallNext,
   rectAreaClamp,
   rectAreaEdgeResize,
   rectAreaHasMinimumSize,
@@ -3898,7 +3898,7 @@ export class FloorplanCardEditor extends LitElement {
               ${floor.furniture.map((f) => this._renderFurnitureSel(f))}
               ${renderWallMask(floor.openings, c.width, c.height, this._wallMaskId)}
               ${floor.walls.map((w) => this._renderWall(w))}
-              ${(floor.areas ?? []).flatMap((a) => rectAreaSideWalls(a.id, a.points, a.autoWalls ?? {})).map((w) => this._renderWall(w))}
+              ${(floor.areas ?? []).flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {})).map((w) => this._renderWall(w))}
               <!-- Room outlines, same layer position as the card so what you
                    place is what you get. Only a static borderColor draws here,
                    there being no hass to resolve a live color from — but the
@@ -4502,13 +4502,13 @@ export class FloorplanCardEditor extends LitElement {
     // to grab, and their absence is the clearest signal on the canvas that
     // the wall is pinned.
     const handles = selected && !w.locked;
-    const autoWallInfo = (this._floor().areas ?? []).flatMap((area) =>
-      RECT_AREA_AUTO_WALL_SIDES.map((side, edgeIndex) => ({ area, side, edgeIndex }))
+    const sideWallInfo = (this._floor().areas ?? []).flatMap((area) =>
+      RECT_AREA_SIDES.map((side, edgeIndex) => ({ area, side, edgeIndex }))
     ).find(({ area, side }) => rectAreaWallId(area.id, side) === w.id);
-    const autoWallSide = autoWallInfo?.side;
-    const autoWallIndex = autoWallInfo?.edgeIndex ?? -1;
-    const autoWallToggle = !!autoWallInfo && !autoWallInfo.area.locked;
-    const sideState = autoWallInfo?.area.autoWalls?.[autoWallSide!];
+    const sideWallSide = sideWallInfo?.side;
+    const sideWallIndex = sideWallInfo?.edgeIndex ?? -1;
+    const sideWallToggle = !!sideWallInfo && !sideWallInfo.area.locked;
+    const sideState = sideWallInfo?.area.sideWalls?.[sideWallSide!];
     const sideIsHorizontal = Math.abs(w.y1 - w.y2) < 0.001;
     const edgeCursorClass = sideIsHorizontal ? "ns" : "ew";
     const style = w.divider
@@ -4517,22 +4517,22 @@ export class FloorplanCardEditor extends LitElement {
     return svg`
       <g>
         <line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
-              class=${["wall-hit", autoWallInfo ? "auto-wall-edge" : "", edgeCursorClass].filter(Boolean).join(" ")}
+              class=${["wall-hit", sideWallInfo ? "side-wall-edge" : "", edgeCursorClass].filter(Boolean).join(" ")}
               @pointerdown=${(e: PointerEvent) => {
-                if (autoWallInfo) {
-                  this._startDrag(e, { kind: "area", id: autoWallInfo.area.id }, undefined, undefined, autoWallIndex);
+                if (sideWallInfo) {
+                  this._startDrag(e, { kind: "area", id: sideWallInfo.area.id }, undefined, undefined, sideWallIndex);
                   return;
                 }
                 this._startDrag(e, { kind: "wall", id: w.id });
               }}
               @dblclick=${(e: PointerEvent) => {
-                if (!autoWallInfo) return;
+                if (!sideWallInfo) return;
                 e.preventDefault();
                 e.stopPropagation();
-                this._toggleRectAreaSide(autoWallInfo.area, autoWallIndex);
+                this._toggleRectAreaSide(sideWallInfo.area, sideWallIndex);
               }} />
         <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
-            class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""} ${autoWallInfo ? "auto-wall-edge" : ""} ${edgeCursorClass}"
+            class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""} ${sideWallInfo ? "side-wall-edge" : ""} ${edgeCursorClass}"
               mask=${`url(#${this._wallMaskId})`}
               style=${style} stroke-linecap="round" /></g>
         ${
@@ -4547,7 +4547,7 @@ export class FloorplanCardEditor extends LitElement {
             : nothing
         }
         ${
-          autoWallToggle
+          sideWallToggle
             ? svg`
                 <path
                   d=${(() => {
@@ -4557,11 +4557,11 @@ export class FloorplanCardEditor extends LitElement {
                     return `M ${cx} ${cy - s} L ${cx + s} ${cy} L ${cx} ${cy + s} L ${cx - s} ${cy} Z`;
                   })()}
                   class=${["area-wall-toggle", sideState ?? "none"].join(" ")}
-                  title=${sideState ? `Double-click to cycle this ${autoWallSide} wall: ${sideState}` : `Double-click to add a wall on the ${autoWallSide} side`}
+                  title=${sideState ? `Double-click to cycle this ${sideWallSide} wall: ${sideState}` : `Double-click to add a wall on the ${sideWallSide} side`}
                   @dblclick=${(e: PointerEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    this._toggleRectAreaSide(autoWallInfo!.area, autoWallIndex);
+                    this._toggleRectAreaSide(sideWallInfo!.area, sideWallIndex);
                   }} />`
             : nothing
         }
@@ -4678,12 +4678,12 @@ export class FloorplanCardEditor extends LitElement {
   }
 
   private _toggleRectAreaSide(a: Area, edgeIndex: number): void {
-    const side = RECT_AREA_AUTO_WALL_SIDES[edgeIndex % RECT_AREA_AUTO_WALL_SIDES.length];
-    const next = rectAreaAutoWallNext(a.autoWalls?.[side]);
-    const autoWalls = { ...(a.autoWalls ?? {}) };
-    if (next === "none") delete autoWalls[side];
-    else autoWalls[side] = next;
-    this._updateArea(a.id, { autoWalls: Object.keys(autoWalls).length ? autoWalls : undefined });
+    const side = RECT_AREA_SIDES[edgeIndex % RECT_AREA_SIDES.length];
+    const next = rectAreaSideWallNext(a.sideWalls?.[side]);
+    const sideWalls = { ...(a.sideWalls ?? {}) };
+    if (next === "none") delete sideWalls[side];
+    else sideWalls[side] = next;
+    this._updateArea(a.id, { sideWalls: Object.keys(sideWalls).length ? sideWalls : undefined });
   }
 
   private _renderAreaSel(a: Area, scopingId?: string): TemplateResult {
@@ -4702,7 +4702,7 @@ export class FloorplanCardEditor extends LitElement {
                  @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "area", id: a.id })} />
         ${selected ? svg`<polygon points=${pts} class="area-outline" />` : nothing}
         ${sharedSides.map(({ side }) => {
-          const index = RECT_AREA_AUTO_WALL_SIDES.indexOf(side);
+          const index = RECT_AREA_SIDES.indexOf(side);
           const start = a.points[index]!;
           const end = a.points[(index + 1) % a.points.length]!;
           const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
@@ -4748,8 +4748,8 @@ export class FloorplanCardEditor extends LitElement {
                         const next = a.points[(i + 1) % a.points.length];
                         const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
                         const isHorizontal = Math.abs(p.y - next.y) < 0.001;
-                        const side = RECT_AREA_AUTO_WALL_SIDES[i]!;
-                        const sideState = a.autoWalls?.[side];
+                        const side = RECT_AREA_SIDES[i]!;
+                        const sideState = a.sideWalls?.[side];
                         return svg`
                           <circle
                             cx=${mid.x}
@@ -4759,7 +4759,7 @@ export class FloorplanCardEditor extends LitElement {
                               "handle",
                               "area-edge-handle",
                               isHorizontal ? "ns" : "ew",
-                              sideState ? "auto-wall-toggle" : "",
+                              sideState ? "side-wall-toggle" : "",
                             ]
                               .filter(Boolean)
                               .join(" ")}
@@ -6732,12 +6732,12 @@ export class FloorplanCardEditor extends LitElement {
       stroke-width: 22;
       cursor: move;
     }
-    .wall-hit.auto-wall-edge.ns,
-    .wall.auto-wall-edge.ns {
+    .wall-hit.side-wall-edge.ns,
+    .wall.side-wall-edge.ns {
       cursor: ns-resize;
     }
-    .wall-hit.auto-wall-edge.ew,
-    .wall.auto-wall-edge.ew {
+    .wall-hit.side-wall-edge.ew,
+    .wall.side-wall-edge.ew {
       cursor: ew-resize;
     }
     .opening-hit {
@@ -7014,8 +7014,8 @@ export class FloorplanCardEditor extends LitElement {
     .area-wall-toggle.ns {
       cursor: ns-resize;
     }
-    .area-edge-handle.auto-wall-toggle.ew,
-    .area-edge-handle.auto-wall-toggle.ns,
+    .area-edge-handle.side-wall-toggle.ew,
+    .area-edge-handle.side-wall-toggle.ns,
     .area-wall-toggle {
       cursor: pointer;
       fill: var(--card-background-color, #fff);
