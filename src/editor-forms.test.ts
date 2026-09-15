@@ -1720,6 +1720,42 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(cleared.shutterIcon).toBeUndefined();
   });
 
+  it("judges the stored switch against the entity the patch leaves behind (#304 review)", () => {
+    const aloneOn = { ...win, shutterEntity: "cover.s", showShutterIcon: true } as Opening;
+    const bothOff = {
+      ...win,
+      entity: "binary_sensor.win",
+      shutterEntity: "cover.s",
+      showShutterIcon: false,
+    } as Opening;
+    // Binding the window contact makes "on" the default, so the stored true goes.
+    expect(openingForm(aloneOn).toPatch({ entity: "binary_sensor.win" })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: undefined,
+    });
+    // Clearing it makes "off" the default, so the stored false goes.
+    expect(openingForm(bothOff).toPatch({ entity: undefined })).toMatchObject({
+      entity: undefined,
+      showShutterIcon: undefined,
+    });
+    // A stored answer that still differs from the new default is left alone.
+    expect(
+      openingForm({ ...aloneOn, showShutterIcon: false } as Opening).toPatch({
+        entity: "binary_sensor.win",
+      })
+    ).toEqual({ entity: "binary_sensor.win" });
+    // Both in one consolidated patch: the switch is judged by the new entity.
+    const alone = openingForm({ ...win, shutterEntity: "cover.s" } as Opening);
+    expect(alone.toPatch({ entity: "binary_sensor.win", showShutterIcon: true })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: undefined,
+    });
+    expect(alone.toPatch({ entity: "binary_sensor.win", showShutterIcon: false })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: false,
+    });
+  });
+
   it("offers the tap target only with two entities to choose between", () => {
     expect(names({ ...win, entity: "binary_sensor.win" } as Opening)).not.toContain("tapTarget");
     expect(names({ ...win, shutterEntity: "cover.s" } as Opening)).not.toContain("tapTarget");

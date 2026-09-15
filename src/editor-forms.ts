@@ -621,10 +621,9 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         else if (k === "shutterInvert") out.shutterInvert = v || undefined;
         // The opening is the default, so it stays out of the YAML.
         else if (k === "tapTarget") out.tapTarget = v === "shutter" ? "shutter" : undefined;
-        // Only the answer that differs from the default is worth writing down:
-        // "off" beside a bound opening, "on" for a shutter alone (issue #293).
-        else if (k === "showShutterIcon")
-          out.showShutterIcon = !!v === shutterMarkDefault(o) ? undefined : !!v;
+        // showShutterIcon is settled after the loop, against the entity this
+        // patch leaves behind rather than the one it found.
+        else if (k === "showShutterIcon") continue;
         // The opening's badge defaults the other way round, so only "on" is.
         // Switching it off takes the glyph with it: kept, it would silently
         // reapply the next time someone turned the badge back on.
@@ -686,6 +685,22 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         }
         else if (k === "invert") out.invert = v || undefined;
         else out[k] = v;
+      }
+      // Only the answer that differs from the default is worth writing down —
+      // "off" beside a bound opening, "on" for a shutter alone (issue #293) —
+      // and the default follows the opening's entity. So it is judged against
+      // the entity after this patch, and binding or clearing that entity
+      // drops a stored answer that has just become the default: a shutter-only
+      // `true` once a window contact is bound, a `false` once it is cleared.
+      // A cleared shutter has already taken the switch with it, above.
+      if (!("shutterEntity" in patch && !patch.shutterEntity)) {
+        const after = { entity: "entity" in out ? (out.entity as string | undefined) : o.entity };
+        if ("showShutterIcon" in patch) {
+          const v = !!patch.showShutterIcon;
+          out.showShutterIcon = v === shutterMarkDefault(after) ? undefined : v;
+        } else if ("entity" in out && o.showShutterIcon === shutterMarkDefault(after)) {
+          out.showShutterIcon = undefined;
+        }
       }
       return out;
     },
