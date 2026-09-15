@@ -4753,7 +4753,7 @@ export function renderSunlight(
     // How far the light gets before a wall stops it. The falloff is measured
     // against this, so a patch is faint by the time it ends however deep or
     // shallow the room is.
-    const along = sunTravelDistance(o, dir, walls, reach);
+    const along = sunTravelDistance(o, dir, blockers, reach);
     // …and how wide it is, measured across the light rather than along the
     // wall: a gap seen obliquely admits a narrower beam than its own length.
     const [ga, gb] = openingEnds(o);
