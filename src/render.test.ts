@@ -33,6 +33,7 @@ import {
   openingAdmitsSun,
   sunReachesOpening,
   openingSunFraction,
+  openingGlassIsClear,
   openingIsGlazed,
   sunBeamPolygon,
   sunLightDirection,
@@ -83,6 +84,8 @@ import {
   openingInMotion,
   openingIsActive,
   areaActionForGesture,
+  furnitureAccessibleName,
+  furnitureActionForGesture,
   areaHasActions,
   entityStateText,
   itemStateText,
@@ -95,15 +98,20 @@ import {
   labelPositionOf,
   editorItemLabel,
   itemHiddenWhenInactive,
+  itemHiddenUntilZoomed,
   resolveStateColor,
   itemLabelSize,
   areaLabelSize,
   areaLabelFontSize,
   wallThickness,
   wallStrokeStyle,
+  wallsThatBlock,
+  isRailing,
+  RAILING_WEIGHT,
   normalizeOverlayScale,
   overlayLength,
   hassRenderInputsChanged,
+  collectNamedEntities,
   collectWatchedEntities,
   isEntityOn,
   entityIsActive,
@@ -124,9 +132,12 @@ import {
   resolvePlanRotation,
   subscribeOrientation,
   rotatedCanvasSize,
+  floorSwitcherAnchor,
+  rotatePlanAngle,
   rotatePlanPoint,
   planRotationTransform,
   polygonCentroid,
+  areaLabelPoint,
   areaZoomTransform,
   resolveAreaZoom,
   zoomedOverlayScale,
@@ -152,8 +163,11 @@ import {
   renderRipple,
   checkHideCondition,
   itemBadgeHidden,
+  itemLabelColor,
 } from "./render";
-import type { FloorplanCardConfig, Opening, RenderHass } from "./types";
+import { buildRenderHass } from "./replay-history/render-state-service";
+import type { FloorplanCardConfig, Opening, RenderHass, Wall } from "./types";
+import { deadSpaces } from "./dead-space";
 import { symbolCatalog, symbolSize } from "./symbols";
 
 /**
@@ -1488,6 +1502,55 @@ describe("isEntityOn / resolveItemIcon", () => {
   });
 });
 
+describe("collectNamedEntities — what names a button but draws nothing (issue #284)", () => {
+  const cfg = (furniture: unknown[]) =>
+    ({
+      type: "t",
+      width: 400,
+      height: 200,
+      floors: [
+        { id: "f1", name: "F1", walls: [], texts: [], openings: [], items: [], trackers: [],
+          areas: [], furniture },
+      ],
+    }) as unknown as Parameters<typeof collectNamedEntities>[0];
+
+  it("collects the entity an action names for itself", () => {
+    const c = cfg([
+      { id: "f", type: "table", x: 0, y: 0, w: 10, h: 10,
+        tap_action: { action: "more-info", entity: "light.shelf" } },
+    ]);
+    expect([...collectNamedEntities(c)]).toEqual(["light.shelf"]);
+    // …and it stays out of the drawing's set, which is what decides what a
+    // replay fetches history for. Nothing about that light is drawn.
+    expect(collectWatchedEntities(c).has("light.shelf")).toBe(false);
+  });
+
+  it("ignores actions that act on no entity, and ones that cannot run", () => {
+    expect([
+      ...collectNamedEntities(
+        cfg([
+          { id: "a", type: "table", x: 0, y: 0, w: 10, h: 10,
+            tap_action: { action: "navigate", navigation_path: "/x" } },
+          { id: "b", type: "table", x: 0, y: 0, w: 10, h: 10,
+            tap_action: { action: "more-info" } },
+          { id: "c", type: "table", x: 0, y: 0, w: 10, h: 10,
+            hold_action: { action: "none", entity: "light.no" } },
+        ]),
+      ),
+    ]).toEqual([]);
+  });
+
+  it("leaves a piece's own entity to the drawing's set", () => {
+    // Already watched because the drawing goes live off it (issue #82), so
+    // naming adds nothing.
+    const c = cfg([
+      { id: "f", type: "plant", x: 0, y: 0, w: 10, h: 10, entity: "sensor.soil",
+        tap_action: { action: "toggle" } },
+    ]);
+    expect(collectWatchedEntities(c).has("sensor.soil")).toBe(true);
+  });
+});
+
 describe("collectWatchedEntities", () => {
   it("collects opening, item, secondary, and tracker entities across floors", () => {
     const cfg = {
@@ -2181,6 +2244,34 @@ describe("itemStateText with attributes (issue #70)", () => {
   it("missing attribute renders the em dash", () => {
     expect(itemStateText(climate(), { entity: "climate.home", attribute: "nope" })).toBe("—");
   });
+
+  it("carries that formatter through the slice the card renders from (issue #260)", () => {
+    // The editor hands the real `hass` to these helpers; the card hands them a
+    // RenderHass built from it. Anything the build drops is not missing, it is
+    // replaced by the raw attribute — which is how a cover position read "50%"
+    // in the editor and "50" on the card.
+    const h = climate() as unknown as Record<string, unknown>;
+    h.formatEntityAttributeValue = (_s: unknown, a: string) => `fmt:${a}`;
+    const rendered = buildRenderHass(
+      h as never,
+      ["climate.home"],
+      { getStateAt: () => new Map() } as never,
+      false,
+      0,
+    );
+    expect(itemStateText(rendered, { entity: "climate.home", attribute: "current_temperature" }))
+      .toBe("fmt:current_temperature");
+  });
+
+  it("re-renders when HA rebuilds the attribute formatter", () => {
+    // A plan built only out of attribute readings never calls the state
+    // formatter, so its identity is not a signal that this plan's wording
+    // changed.
+    const base = climate() as unknown as Record<string, unknown>;
+    const prev = { ...base, formatEntityAttributeValue: () => "old" } as never;
+    const next = { ...base, formatEntityAttributeValue: () => "new" } as never;
+    expect(hassRenderInputsChanged(prev, next, ["climate.home"])).toBe(true);
+  });
 });
 
 describe("resolveStateColor (issue #68)", () => {
@@ -2795,6 +2886,54 @@ describe("sunlight through the openings", () => {
     expect(openingSunFraction({ type: "door" }, -2)).toBe(0);
   });
 
+  it("reads a roller shutter as the covering it is, not as the glass behind it", () => {
+    // A cover with device_class `shutter` binds as a window that rolls
+    // (openingFromDeviceClass). Glazed by the window default, it used to read
+    // as always-clear however far down it was — so a shutter closed over a
+    // window stopped a lamp's pool and let the midday sun straight through.
+    const shutter = { type: "window", motion: "roll" } as const;
+    expect(openingSunFraction(shutter, 0)).toBe(0);
+    expect(openingSunFraction(shutter, 0.5)).toBeCloseTo(0.5);
+    expect(openingSunFraction(shutter, 1)).toBe(1);
+    // A garage door is the same motion and was never glass to begin with.
+    expect(openingSunFraction({ type: "door", motion: "roll" }, 0)).toBe(0);
+    // Ordinary glass is untouched: only roll motion is the covering case.
+    expect(openingSunFraction({ type: "window", motion: "slide" }, 0)).toBe(1);
+    expect(openingSunFraction({ type: "window" }, 0)).toBe(1);
+    // Glass explicitly declared on a rolling opening still yields to it —
+    // the covering is in front of the glass, so what the glass says is moot.
+    expect(openingSunFraction({ type: "door", glazed: true, motion: "roll" }, 0)).toBe(0);
+  });
+
+  it("gives sunlight and a lamp's pool the same answer on every covered window", () => {
+    // The two layers read one rule (openingGlassIsClear), so they cannot
+    // drift apart again. device_class → {type, motion} per openingFromDeviceClass.
+    const bound = [
+      { dc: "window", o: { type: "window" } },
+      { dc: "shutter", o: { type: "window", motion: "roll" } },
+      { dc: "blind", o: { type: "window", motion: "slide" } },
+      { dc: "garage", o: { type: "door", motion: "roll" } },
+    ] as const;
+    for (const { dc, o } of bound) {
+      const sun = openingSunFraction(o, 0);
+      const glow = glowClearFraction(o as Opening, 0);
+      expect(`${dc}: sun=${sun}`).toBe(`${dc}: sun=${glow}`);
+    }
+  });
+
+  it("openingGlassIsClear is the one rule both light paths ask", () => {
+    expect(openingGlassIsClear({ type: "window" })).toBe(true);
+    expect(openingGlassIsClear({ type: "door" })).toBe(false);
+    expect(openingGlassIsClear({ type: "door", glazed: true })).toBe(true);
+    expect(openingGlassIsClear({ type: "window", glazed: false })).toBe(false);
+    // The covering exception.
+    expect(openingGlassIsClear({ type: "window", motion: "roll" })).toBe(false);
+    // Documented gap: a blind/shade/curtain defaults to `slide`, so a closed
+    // one still reads as clear glass. Pinned so the day it is fixed is a
+    // deliberate change to this line rather than a silent one.
+    expect(openingGlassIsClear({ type: "window", motion: "slide" })).toBe(true);
+  });
+
   it("counts the gap a sliding style clears, not the distance a leaf travels", () => {
     // The composition the card performs: openingClearFraction first (both
     // leaves, per-style travel), then the glazing and shutter rules on top.
@@ -3332,12 +3471,20 @@ describe("the shutter badge (issue #74 follow-up)", () => {
 
   const both = { entity: "binary_sensor.win", shutterEntity: "cover.t" };
 
-  it("is earned only by an opening with both entities bound", () => {
+  it("is shown by default only with both entities bound", () => {
     expect(hasShutterMark(win())).toBe(false);
     expect(hasShutterMark(win({ entity: "binary_sensor.win" }))).toBe(false);
-    // A shutter alone has no second entity to reveal — the symbol is it.
+    // A shutter alone has no second entity to reveal, so it starts off —
+    // switching it on here would badge every shutter-only window on upgrade.
     expect(hasShutterMark(win({ shutterEntity: "cover.t" }))).toBe(false);
     expect(hasShutterMark(win(both))).toBe(true);
+  });
+
+  it("can be switched on for a shutter bound alone (issue #293)", () => {
+    // The roll-up without a window contact: raised, only its track line is left.
+    expect(hasShutterMark(win({ shutterEntity: "cover.t", showShutterIcon: true }))).toBe(true);
+    // Switching it on needs a shutter to badge; an opening entity is not one.
+    expect(hasShutterMark(win({ entity: "binary_sensor.win", showShutterIcon: true }))).toBe(false);
   });
 
   it("can be switched off, and off is the only value worth storing", () => {
@@ -3950,6 +4097,53 @@ describe("overlay size while zoomed (issue #222)", () => {
     expect(zoomedOverlayScale(4, 0)).toBeCloseTo(0.25);
     expect(zoomedOverlayScale(4, -2)).toBeCloseTo(0.25);
     expect(zoomedOverlayScale(NaN, 2)).toBe(1);
+  });
+});
+
+describe("areaLabelPoint", () => {
+  it("does not move a room name when an extra vertex splits a straight wall", () => {
+    const rect = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 }];
+    const subdivided = [rect[0]!, { x: 3, y: 0 }, ...rect.slice(1)];
+    expect(areaLabelPoint(subdivided)).toEqual(areaLabelPoint(rect));
+    expect(polygonCentroid(subdivided)).not.toEqual(polygonCentroid(rect));
+  });
+
+  it("agrees with the vertex mean on a rectangle", () => {
+    const rect = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 }];
+    expect(areaLabelPoint(rect)).toEqual({ x: 5, y: 10 });
+  });
+
+  it("centres on the floor of an L-shaped room, not on its corners", () => {
+    // The kitchen that surfaced this: four of six vertices sit on the right,
+    // so the vertex mean lands at x=300 — outside the room's visual middle.
+    const kitchen = [
+      { x: 80, y: 120 }, { x: 460, y: 120 }, { x: 460, y: 260 },
+      { x: 360, y: 260 }, { x: 360, y: 420 }, { x: 80, y: 420 },
+    ];
+    const p = areaLabelPoint(kitchen);
+    expect(p.x).toBeCloseTo(247.1, 1);
+    expect(p.y).toBeCloseTo(258.6, 1);
+    expect(polygonCentroid(kitchen).x).toBe(300);
+  });
+
+  it("does not care which way the polygon winds", () => {
+    const cw = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 }];
+    expect(areaLabelPoint([...cw].reverse())).toEqual(areaLabelPoint(cw));
+  });
+
+  it("falls back to the vertex mean when the centroid escapes a U-shaped room", () => {
+    // Centre of mass sits in the notch between the arms, outside the polygon.
+    const u = [
+      { x: 0, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 30 }, { x: 20, y: 30 },
+      { x: 20, y: 10 }, { x: 10, y: 10 }, { x: 10, y: 30 }, { x: 0, y: 30 },
+    ];
+    expect(areaLabelPoint(u)).toEqual(polygonCentroid(u));
+  });
+
+  it("falls back for a polygon with no area", () => {
+    const line = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 0 }];
+    expect(areaLabelPoint(line)).toEqual({ x: 10, y: 0 });
+    expect(areaLabelPoint([])).toEqual({ x: 0, y: 0 });
   });
 });
 
@@ -5510,6 +5704,76 @@ describe("renderGlow (issue #6)", () => {
   });
 });
 
+describe("itemHiddenUntilZoomed (issue #222)", () => {
+  // A room across the top-left quadrant of a 1000x600 plan.
+  const living: Area = {
+    id: "a1",
+    name: "Living",
+    points: [
+      { x: 100, y: 100 },
+      { x: 500, y: 100 },
+      { x: 500, y: 400 },
+      { x: 100, y: 400 },
+    ],
+  };
+  const kitchen: Area = {
+    id: "a2",
+    name: "Kitchen",
+    points: [
+      { x: 600, y: 100 },
+      { x: 900, y: 100 },
+      { x: 900, y: 400 },
+      { x: 600, y: 400 },
+    ],
+  };
+  const inside = { showOnlyWhenZoomed: true, x: 300, y: 250 };
+  const outside = { showOnlyWhenZoomed: true, x: 800, y: 250 };
+
+  it("leaves an ordinary device alone at every zoom", () => {
+    expect(itemHiddenUntilZoomed({ x: 300, y: 250 }, undefined)).toBe(false);
+    expect(itemHiddenUntilZoomed({ x: 300, y: 250 }, living)).toBe(false);
+    // Explicitly off is the same as unset.
+    expect(itemHiddenUntilZoomed({ showOnlyWhenZoomed: false, x: 300, y: 250 }, living)).toBe(false);
+  });
+
+  it("hides a flagged device on the full plan", () => {
+    expect(itemHiddenUntilZoomed(inside, undefined)).toBe(true);
+  });
+
+  it("shows it in its own room and nowhere else", () => {
+    expect(itemHiddenUntilZoomed(inside, living)).toBe(false);
+    expect(itemHiddenUntilZoomed(inside, kitchen)).toBe(true);
+    expect(itemHiddenUntilZoomed(outside, living)).toBe(true);
+    expect(itemHiddenUntilZoomed(outside, kitchen)).toBe(false);
+  });
+
+  it("takes the room by id or by name when one is given", () => {
+    // A device drawn outside every polygon — the porch doorbell — is reachable
+    // only this way, which is the whole reason `area` exists.
+    const porch = { showOnlyWhenZoomed: true, area: "a1", x: 960, y: 560 };
+    expect(itemHiddenUntilZoomed(porch, living)).toBe(false);
+    expect(itemHiddenUntilZoomed(porch, kitchen)).toBe(true);
+    expect(itemHiddenUntilZoomed({ ...porch, area: "Living" }, living)).toBe(false);
+    expect(itemHiddenUntilZoomed({ ...porch, area: "Living" }, kitchen)).toBe(true);
+  });
+
+  it("lets the named room override where the device is drawn", () => {
+    // Sitting in the Living polygon but assigned to the Kitchen: the name wins,
+    // otherwise `area` could only ever add rooms and never correct one.
+    const assigned = { showOnlyWhenZoomed: true, area: "a2", x: 300, y: 250 };
+    expect(itemHiddenUntilZoomed(assigned, kitchen)).toBe(false);
+    expect(itemHiddenUntilZoomed(assigned, living)).toBe(true);
+  });
+
+  it("stays hidden when there is no room it could belong to", () => {
+    // Fails hidden rather than falling back to "always show": a degenerate
+    // polygon is not a room, and neither is a plan with no areas drawn on it.
+    const degenerate: Area = { id: "a3", points: [{ x: 0, y: 0 }, { x: 10, y: 0 }] };
+    expect(itemHiddenUntilZoomed(inside, degenerate)).toBe(true);
+    expect(itemHiddenUntilZoomed(inside, { id: "a4", points: [] })).toBe(true);
+  });
+});
+
 describe("itemHiddenWhenInactive (issue #55)", () => {
   it("hides only when asked to, and only while inactive", () => {
     expect(itemHiddenWhenInactive({ entity: "light.a", hideWhenInactive: true }, "off")).toBe(true);
@@ -6082,5 +6346,408 @@ describe("hide by condition, through the card's own entry points", () => {
       ],
     } as unknown as FloorplanCardConfig);
     for (const id of [RADIATOR, OUTSIDE, "sensor.a", "sensor.b"]) expect(ids.has(id)).toBe(true);
+  });
+});
+
+describe("item label color (itemLabelColor)", () => {
+  it("returns the state color by default when disableLabelColor is false or omitted", () => {
+    expect(itemLabelColor({ disableLabelColor: false }, "#ff0000")).toBe("#ff0000");
+    expect(itemLabelColor({}, "#ff0000")).toBe("#ff0000");
+  });
+
+  it("returns undefined when disableLabelColor is true and custom color is off", () => {
+    expect(itemLabelColor({ disableLabelColor: true, useCustomLabelColor: false }, "#ff0000")).toBe(undefined);
+    expect(itemLabelColor({ disableLabelColor: true }, "#ff0000")).toBe(undefined);
+  });
+
+  it("returns the custom color when both toggles are true", () => {
+    expect(itemLabelColor({ disableLabelColor: true, useCustomLabelColor: true, labelCustomColor: "#00ff00" }, "#ff0000")).toBe("#00ff00");
+  });
+});
+describe("floorSwitcherAnchor — where the floor switcher sits (issue #281)", () => {
+  it("reads a position", () => {
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: 60, y: 100 } })).toEqual({ x: 60, y: 100 });
+  });
+
+  it("says nothing when none is set, which is the corner it always used", () => {
+    expect(floorSwitcherAnchor({})).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: undefined })).toBeUndefined();
+  });
+
+  it("refuses half a point rather than implying the other half", () => {
+    // `{ x: 100 }` is not a position. Reading the missing half as 0 would drop
+    // the switcher in the top-left corner with nothing on screen saying why.
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: 100 } as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { y: 100 } as never })).toBeUndefined();
+  });
+
+  it("refuses anything that is not a pair of real numbers", () => {
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: NaN, y: 10 } })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: 10, y: Infinity } })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: "top-right" as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: null as never })).toBeUndefined();
+  });
+
+  it("takes a numeric string, since YAML hands those over freely", () => {
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: "60", y: "100" } as never })).toEqual({
+      x: 60,
+      y: 100,
+    });
+  });
+
+  it("keeps a point outside the canvas instead of clamping it", () => {
+    // A plan whose walls stop short of the canvas has real empty margin to
+    // park the switcher in, and clamping would drag it back onto the drawing.
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: -40, y: 900 } })).toEqual({ x: -40, y: 900 });
+  });
+});
+
+describe("furnitureActionForGesture — a piece can do more than change floor (issue #284)", () => {
+  // "I would like the option to select either a floor or the tap actions like
+  // we have for areas."
+  const piece = (over: Partial<Furniture> = {}) =>
+    ({ id: "f1", type: "table", x: 0, y: 0, w: 40, h: 20, ...over }) as Furniture;
+
+  it("says nothing when no gesture is configured", () => {
+    // Which is what keeps every plan drawn before this unchanged: the caller
+    // reads `undefined` as "do whatever you did before".
+    for (const g of ["tap", "hold", "double_tap"] as const) {
+      expect(furnitureActionForGesture(piece(), g)).toBeUndefined();
+    }
+  });
+
+  it("returns the configured action for its own gesture and no other", () => {
+    const f = piece({ hold_action: { action: "more-info" } });
+    expect(furnitureActionForGesture(f, "hold")?.config).toEqual({ action: "more-info" });
+    expect(furnitureActionForGesture(f, "tap")).toBeUndefined();
+    expect(furnitureActionForGesture(f, "double_tap")).toBeUndefined();
+  });
+
+  it("falls back to the piece's own entity when the action names none", () => {
+    // Binding a cabinet's contact sensor once should be enough for more-info
+    // to know what to show.
+    const f = piece({ entity: "binary_sensor.cabinet", tap_action: { action: "more-info" } });
+    expect(furnitureActionForGesture(f, "tap")?.entity).toBe("binary_sensor.cabinet");
+  });
+
+  it("lets the action name its own target instead", () => {
+    const f = piece({
+      entity: "binary_sensor.cabinet",
+      tap_action: { action: "toggle", entity: "light.shelf" } as never,
+    });
+    expect(furnitureActionForGesture(f, "tap")?.entity).toBe("light.shelf");
+  });
+
+  it("is undefined-entity when neither names one, which is fine for navigate", () => {
+    const f = piece({ tap_action: { action: "navigate", navigation_path: "/lovelace/1" } as never });
+    expect(furnitureActionForGesture(f, "tap")?.entity).toBeUndefined();
+    expect(furnitureActionForGesture(f, "tap")?.config).toEqual({
+      action: "navigate",
+      navigation_path: "/lovelace/1",
+    });
+  });
+
+  it("reads `none` as a configured action, not as absence", () => {
+    // The difference matters on a staircase: `none` is how you say "stop
+    // changing floor on tap", and treating it as unset would keep the change.
+    const f = piece({ goToFloor: "up", tap_action: { action: "none" } });
+    expect(furnitureActionForGesture(f, "tap")?.config).toEqual({ action: "none" });
+  });
+
+  it("names a piece for anyone who cannot see it", () => {
+    // A piece that answers gestures is a button, and the drawing contributes
+    // paths and nothing else — so this is the only thing standing between an
+    // action-only piece and an unnamed button.
+    const hass = {
+      states: {
+        "light.shelf": { state: "on", attributes: { friendly_name: "Shelf light" } },
+        "light.lamp": { state: "on", attributes: { friendly_name: "Reading lamp" } },
+      },
+    } as unknown as Parameters<typeof furnitureAccessibleName>[1];
+    expect(furnitureAccessibleName(piece({ entity: "light.shelf" }), hass)).toBe("Shelf light");
+    // An entity nothing has a friendly name for still beats the symbol id.
+    expect(furnitureAccessibleName(piece({ entity: "light.spare" }), hass)).toBe("light.spare");
+    // No entity at all: what it is drawn as, by the name its own definition
+    // carries — which beats anything unpicking the id could produce, since the
+    // ids are written for configs rather than for reading aloud.
+    expect(furnitureAccessibleName({ type: "roundTable" }, hass)).toBe("round table");
+    expect(furnitureAccessibleName({ type: "fishTank" }, hass)).toBe("fish tank");
+    expect(furnitureAccessibleName({ type: "cornerShowerCurved" }, hass)).toBe(
+      "curved corner shower",
+    );
+    // A symbol this install does not have: the id, said as close to English as
+    // an id gets. camelCase split at the hump, because `fishTank` read out
+    // verbatim is not a name.
+    expect(furnitureAccessibleName({ type: "coffee-table" }, hass)).toBe("coffee table");
+    expect(furnitureAccessibleName({ type: "double_bed" }, hass)).toBe("double bed");
+    expect(furnitureAccessibleName({ type: "wineRackTall" }, hass)).toBe("wine rack tall");
+    // And never the empty string, which would leave the button unnamed again.
+    expect(furnitureAccessibleName({ type: "" }, hass)).toBe("Furniture");
+    expect(furnitureAccessibleName({ type: "sofa" }, undefined)).toBe("sofa");
+    // A config's own symbol brings its own name with it.
+    expect(
+      furnitureAccessibleName({ type: "myDesk" }, hass, {
+        myDesk: { id: "myDesk", name: "standing desk" },
+      } as unknown as Parameters<typeof furnitureAccessibleName>[2]),
+    ).toBe("standing desk");
+  });
+
+  it("names the entity the gesture will act on, not the one the piece carries", () => {
+    const hass = {
+      states: {
+        "light.shelf": { state: "on", attributes: { friendly_name: "Shelf light" } },
+        "light.lamp": { state: "on", attributes: { friendly_name: "Reading lamp" } },
+      },
+    } as unknown as Parameters<typeof furnitureAccessibleName>[1];
+
+    // An action names its own target, and that is what the button does — so a
+    // plain box whose tap opens the light on it is the light, not the box.
+    expect(
+      furnitureAccessibleName(
+        piece({ type: "table", tap_action: { action: "more-info", entity: "light.shelf" } }),
+        hass,
+      ),
+    ).toBe("Shelf light");
+
+    // The action wins over the piece's own entity, because the action is what
+    // the gesture reaches.
+    expect(
+      furnitureAccessibleName(
+        piece({ entity: "light.lamp", tap_action: { action: "more-info", entity: "light.shelf" } }),
+        hass,
+      ),
+    ).toBe("Shelf light");
+
+    // An action with no entity of its own falls back to the piece's, exactly as
+    // furnitureActionForGesture resolves it.
+    expect(
+      furnitureAccessibleName(piece({ entity: "light.lamp", tap_action: { action: "toggle" } }), hass),
+    ).toBe("Reading lamp");
+
+    // Gestures disagreeing: tap first, then hold, then double-tap.
+    expect(
+      furnitureAccessibleName(
+        piece({
+          hold_action: { action: "more-info", entity: "light.lamp" },
+          tap_action: { action: "more-info", entity: "light.shelf" },
+        }),
+        hass,
+      ),
+    ).toBe("Shelf light");
+    expect(
+      furnitureAccessibleName(
+        piece({
+          hold_action: { action: "more-info", entity: "light.lamp" },
+          double_tap_action: { action: "more-info", entity: "light.shelf" },
+        }),
+        hass,
+      ),
+    ).toBe("Reading lamp");
+
+    // An unusable gesture cannot win. A `more-info` with nothing to show is
+    // configured and non-`none`, but it will not run — so the working hold
+    // behind it is what the button is named after.
+    expect(
+      furnitureAccessibleName(
+        piece({
+          type: "table",
+          tap_action: { action: "more-info" },
+          hold_action: { action: "more-info", entity: "light.lamp" },
+        }),
+        hass,
+      ),
+    ).toBe("Reading lamp");
+
+    // `navigate` runs, but it acts on a path rather than on an entity, so it
+    // supplies no name and the piece's own binding answers instead.
+    expect(
+      furnitureAccessibleName(
+        piece({
+          entity: "light.lamp",
+          tap_action: { action: "navigate", navigation_path: "/lovelace/0" },
+        }),
+        hass,
+      ),
+    ).toBe("Reading lamp");
+    // …and with nothing bound, the symbol.
+    expect(
+      furnitureAccessibleName(
+        piece({ type: "coffee-table", tap_action: { action: "navigate", navigation_path: "/x" } }),
+        hass,
+      ),
+    ).toBe("coffee table");
+
+    // A `none` names nothing: it is configured, but the button never acts on it.
+    expect(
+      furnitureAccessibleName(
+        piece({
+          type: "table",
+          tap_action: { action: "none", entity: "light.shelf" } as never,
+          hold_action: { action: "more-info", entity: "light.lamp" },
+        }),
+        hass,
+      ),
+    ).toBe("Reading lamp");
+  });
+
+  it("matches areaActionForGesture, which is the shape it was asked to copy", () => {
+    const shared = {
+      entity: "sensor.a",
+      tap_action: { action: "more-info" as const },
+      hold_action: { action: "toggle" as const },
+    };
+    for (const g of ["tap", "hold", "double_tap"] as const) {
+      expect(furnitureActionForGesture(piece(shared), g)).toEqual(
+        areaActionForGesture({ ...shared }, g),
+      );
+    }
+  });
+});
+
+describe("rotatePlanAngle — a bearing turns with the plan (issue #280)", () => {
+  // "Ripple direction stays in editing reference": the overlay is HTML and is
+  // never transformed as a whole, so a direction set in the editor kept
+  // pointing the same way on screen while the plan turned underneath it.
+  it("adds the rotation, so plan-up becomes screen-right at 90°", () => {
+    expect(rotatePlanAngle(0, 0)).toBe(0);
+    expect(rotatePlanAngle(0, 90)).toBe(90);
+    expect(rotatePlanAngle(0, 180)).toBe(180);
+    expect(rotatePlanAngle(0, 270)).toBe(270);
+  });
+
+  it("agrees with rotatePlanPoint about which way the plan turns", () => {
+    // The two must not disagree: the point mapping puts a device somewhere and
+    // this points its cone. Plan-up is (0,-1) in screen axes; at 90° the point
+    // mapping sends it to (1,0) — screen-right — which is a bearing of 90.
+    const W = 400;
+    const H = 200;
+    const centre = { x: W / 2, y: H / 2 };
+    const above = { x: W / 2, y: H / 2 - 50 }; // 50 units toward plan-north
+    for (const rot of [0, 90, 180, 270] as const) {
+      const c = rotatePlanPoint(centre.x, centre.y, W, H, rot);
+      const a = rotatePlanPoint(above.x, above.y, W, H, rot);
+      // Bearing of the mapped offset, clockwise from screen-up.
+      const bearing = ((Math.atan2(a.x - c.x, c.y - a.y) * 180) / Math.PI + 360) % 360;
+      expect(Math.round(bearing), `rot=${rot}`).toBe(rotatePlanAngle(0, rot));
+    }
+  });
+
+  it("carries whatever bearing was stored, not just the default", () => {
+    expect(rotatePlanAngle(45, 90)).toBe(135);
+    expect(rotatePlanAngle(200, 270)).toBe(110);
+  });
+
+  it("normalises into 0..360 so the value can go straight into CSS", () => {
+    expect(rotatePlanAngle(350, 90)).toBe(80);
+    expect(rotatePlanAngle(-90, 0)).toBe(270);
+    expect(rotatePlanAngle(720, 90)).toBe(90);
+  });
+
+  it("treats an unusable angle as 0 rather than poisoning the rotation", () => {
+    // cssNumber's job: a config carrying a string or NaN must not turn the
+    // whole expression into NaN and take the mask with it.
+    expect(rotatePlanAngle(NaN, 90)).toBe(90);
+    expect(rotatePlanAngle("nonsense" as unknown as number, 180)).toBe(180);
+  });
+
+  it("is the identity on an unrotated plan, which is every plan by default", () => {
+    for (const a of [0, 45, 180, 359]) expect(rotatePlanAngle(a, 0)).toBe(a);
+  });
+});
+
+describe("floorSwitcherAnchor — what Number() would have let through (issue #281 review)", () => {
+  // `Number()` answers 0 for all of these, so coercing before checking the
+  // type accepted them and parked the switcher on the left edge — while the
+  // function's own contract said both halves had to be real numbers.
+  it("refuses a key written with no value, which YAML reads as null", () => {
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: null, y: 100 } as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: 100, y: null } as never })).toBeUndefined();
+  });
+
+  it("refuses a blank string", () => {
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: "", y: 100 } as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: "   ", y: 100 } as never })).toBeUndefined();
+  });
+
+  it("refuses values that are not numbers at all", () => {
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: false, y: 100 } as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: [], y: 100 } as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: {}, y: 100 } as never })).toBeUndefined();
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: "left", y: 100 } as never })).toBeUndefined();
+  });
+
+  it("still takes 0, which is a real coordinate", () => {
+    // The point of checking the type rather than the value: the top-left
+    // corner of the canvas is a legitimate place to put it.
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: 0, y: 0 } })).toEqual({ x: 0, y: 0 });
+    expect(floorSwitcherAnchor({ floorSwitcher: { x: "0", y: "0" } as never })).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("railings (issue #182)", () => {
+  const wall = (id: string, x1: number, y1: number, x2: number, y2: number): Wall => ({
+    id,
+    x1,
+    y1,
+    x2,
+    y2,
+  });
+  const railing = (id: string, x1: number, y1: number, x2: number, y2: number): Wall => ({
+    ...wall(id, x1, y1, x2, y2),
+    kind: "railing",
+  });
+
+  it("is a railing only when it says so", () => {
+    expect(isRailing(wall("w", 0, 0, 1, 0))).toBe(false);
+    expect(isRailing({ kind: "wall" })).toBe(false);
+    expect(isRailing({ kind: "railing" })).toBe(true);
+  });
+
+  it("drops railings from the walls that block, keeping array identity for the caches", () => {
+    const plain = [wall("a", 0, 0, 100, 0), wall("b", 100, 0, 100, 100)];
+    // No railing: the very same array, so deadSpacesCached still hits.
+    expect(wallsThatBlock(plain)).toBe(plain);
+    const mixed = [...plain, railing("r", 0, 100, 100, 100)];
+    const solid = wallsThatBlock(mixed);
+    expect(solid.map((w) => w.id)).toEqual(["a", "b"]);
+    // Same input, same output — not a fresh array on every state change.
+    expect(wallsThatBlock(mixed)).toBe(solid);
+  });
+
+  it("lets the sun reach a balcony door over the railing in front of it", () => {
+    // House wall along y=0 with a door in it; the balcony's railing runs 120
+    // units out, between the door and a sun shining straight in from +y.
+    const facade = wall("f", 0, 0, 400, 0);
+    const rail = railing("r", 100, 120, 300, 120);
+    const door = { x: 200, y: 0 };
+    const towardHouse = { x: 0, y: -1 };
+    // As a full-height wall it stands between the door and the sky.
+    expect(sunReachesOpening(door, [facade, { ...rail, kind: undefined }], towardHouse)).toBe(false);
+    expect(sunReachesOpening(door, wallsThatBlock([facade, rail]), towardHouse)).toBe(true);
+  });
+
+  it("does not clip a lamp's pool", () => {
+    const rail = railing("r", 0, 150, 400, 150);
+    expect(glowReach(200, 100, 200, [{ ...rail, kind: undefined }])).toBeDefined();
+    expect(glowReach(200, 100, 200, wallsThatBlock([rail]))).toBeUndefined();
+  });
+
+  it("seals off no dead space", () => {
+    // A balcony with no door onto it: three railings against the façade.
+    const walls = [
+      wall("f", 0, 0, 200, 0),
+      railing("r1", 200, 0, 200, 100),
+      railing("r2", 200, 100, 0, 100),
+      railing("r3", 0, 100, 0, 0),
+    ];
+    const asWalls = walls.map((w) => ({ ...w, kind: undefined }));
+    expect(deadSpaces(asWalls, [])).toHaveLength(1);
+    expect(deadSpaces(wallsThatBlock(walls), [])).toHaveLength(0);
+  });
+
+  it("draws an explicit thickness thinner, and leaves the skin's weight to CSS", () => {
+    expect(wallStrokeStyle(undefined, "railing")).toBe("");
+    expect(wallStrokeStyle(5, "railing")).toBe(`stroke-width:${5 * RAILING_WEIGHT};`);
+    expect(wallStrokeStyle(5, "wall")).toBe("stroke-width:5;");
   });
 });

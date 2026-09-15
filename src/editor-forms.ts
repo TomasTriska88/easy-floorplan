@@ -63,6 +63,7 @@ import {
   offlineStyleOf,
   sliderStyleOf,
   shutterStyleOf,
+  shutterMarkDefault,
   DEFAULT_SUN_BEARING,
   SUN_REACH,
   openingSash,
@@ -251,7 +252,11 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         // here would only invite drawing one. A hand-written config may still
         // set it on a door, and the card draws that honestly as a sealed
         // panel — this is about what the editor suggests, not what it allows.
-        ...(o.type === "window" ? [opt("fixed", "Fixed (does not open)")] : [])
+        // Windows only, for the same reason `fixed` is (issue #272): a
+        // top-hung sash is a window, and a top-hung door is not a thing.
+        ...(o.type === "window"
+          ? [opt("fixed", "Fixed (does not open)"), opt("awning", "Top-hinged (awning)")]
+          : [])
       ),
     },
     { name: "length", label: "Length", required: true, selector: { number: { min: 1, mode: "box" } } },
@@ -467,23 +472,24 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
       });
     }
   }
-  // With both bound, which one a press leads with. Only a real question when
-  // there are two entities to choose between — and the reason it exists: the
-  // shutter used to be reachable by hold alone, which is not discoverable and
-  // is awkward on a wall tablet.
-  if (o.entity && o.shutterEntity) {
-    // The badge that makes the second entity visible. On by default; the
-    // switch is for a plan where every window has one and they start to shout.
+  if (o.shutterEntity) {
+    // The shutter's badge. With the opening bound too it is what makes the
+    // second entity visible, so it starts on and the switch is for a plan where
+    // every window has one and they start to shout. With the shutter alone it
+    // starts off, and is sold the way the opening's own badge is (issue #293).
     fields.push({
       name: "showShutterIcon",
       label: "Shutter icon",
-      helper: "Shows the shutter's state beside the opening, and opens it when tapped",
+      helper:
+        !o.entity && shutterStyleOf(o) === "roll"
+          ? "A raised roll-up leaves only a line — this puts the shutter's state beside it, and opens it when tapped"
+          : "Shows the shutter's state beside the opening, and opens it when tapped",
       selector: { boolean: {} },
     });
     // Only worth asking once the badge is actually drawn. Left empty the badge
     // follows the entity, whose default glyph changes with the state — an
     // override is one glyph for both, which is why it is not the default.
-    if (o.showShutterIcon ?? true) {
+    if (o.showShutterIcon ?? shutterMarkDefault(o)) {
       fields.push({
         name: "shutterIcon",
         label: "Icon",
@@ -491,6 +497,12 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         selector: { icon: {} },
       });
     }
+  }
+  // With both bound, which one a press leads with. Only a real question when
+  // there are two entities to choose between — and the reason it exists: the
+  // shutter used to be reachable by hold alone, which is not discoverable and
+  // is awkward on a wall tablet.
+  if (o.entity && o.shutterEntity) {
     fields.push({
       name: "tapTarget",
       label: "Tap opens",
@@ -555,7 +567,7 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
       shutterStyle: shutterStyleOf(o),
       shutterSide: o.shutterFlipV ? "near" : "far",
       shutterInvert: o.shutterInvert ?? false,
-      showShutterIcon: o.showShutterIcon ?? true,
+      showShutterIcon: o.showShutterIcon ?? shutterMarkDefault(o),
       shutterIcon: o.shutterIcon ?? "",
       showIcon: o.showIcon ?? false,
       icon: o.icon ?? "",
@@ -609,8 +621,9 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         else if (k === "shutterInvert") out.shutterInvert = v || undefined;
         // The opening is the default, so it stays out of the YAML.
         else if (k === "tapTarget") out.tapTarget = v === "shutter" ? "shutter" : undefined;
-        // Shown is the default: only "off" is worth writing down.
-        else if (k === "showShutterIcon") out.showShutterIcon = v ? undefined : false;
+        // showShutterIcon is settled after the loop, against the entity this
+        // patch leaves behind rather than the one it found.
+        else if (k === "showShutterIcon") continue;
         // The opening's badge defaults the other way round, so only "on" is.
         // Switching it off takes the glyph with it: kept, it would silently
         // reapply the next time someone turned the badge back on.
@@ -620,8 +633,8 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         }
         else if (k === "motion") {
           const motion =
-            v === "slide" || v === "roll" || v === "fixed"
-              ? (v as "slide" | "roll" | "fixed")
+            v === "slide" || v === "roll" || v === "fixed" || v === "awning"
+              ? (v as "slide" | "roll" | "fixed" | "awning")
               : undefined;
           out.motion = motion;
           // sliderStyle only applies while sliding — drop it when switching
@@ -672,6 +685,31 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         }
         else if (k === "invert") out.invert = v || undefined;
         else out[k] = v;
+      }
+      // Only the answer that differs from the default is worth writing down —
+      // "off" beside a bound opening, "on" for a shutter alone (issue #293) —
+      // and the default follows the opening's entity. So it is judged against
+      // the entity after this patch, and binding or clearing that entity
+      // drops a stored answer that has just become the default: a shutter-only
+      // `true` once a window contact is bound, a `false` once it is cleared.
+      // A cleared shutter has already taken the switch with it, above.
+      //
+      // A badge this patch leaves hidden takes its glyph override too, the way
+      // Show icon takes `icon`: the field disappears with the badge, and a kept
+      // override would silently reapply the next time it was switched on. That
+      // covers the switch turned off and, since the default moves with the
+      // entity, a contact cleared from under a badge that was only on by default.
+      if (!("shutterEntity" in patch && !patch.shutterEntity)) {
+        const after = { entity: "entity" in out ? (out.entity as string | undefined) : o.entity };
+        const byDefault = shutterMarkDefault(after);
+        if ("showShutterIcon" in patch) {
+          const v = !!patch.showShutterIcon;
+          out.showShutterIcon = v === byDefault ? undefined : v;
+          if (!v) out.shutterIcon = undefined;
+        } else if ("entity" in out) {
+          if (o.showShutterIcon === byDefault) out.showShutterIcon = undefined;
+          if (o.shutterIcon && !(o.showShutterIcon ?? byDefault)) out.shutterIcon = undefined;
+        }
       }
       return out;
     },
@@ -912,30 +950,69 @@ export function itemShowStateForm(it: FloorItem): FormSpec {
 
 /** Group 3: where the label sits and how big it is. */
 export function itemLabelForm(it: FloorItem): FormSpec {
+  const fields: FormField[] = [
+    {
+      name: "labelPosition",
+      label: "Label position",
+      helper: "Beside the badge instead of under it — a long reading then grows one way only",
+      selector: dropdown(opt("below", "Below"), opt("left", "Left"), opt("right", "Right")),
+    },
+    {
+      name: "labelSize",
+      label: "Label size",
+      selector: { number: { min: 8, max: 40, step: 1, mode: "slider", unit_of_measurement: "px" } },
+    },
+    {
+      name: "disableLabelColor",
+      label: "Disable label color",
+      helper: "Keeps the text in its default color even if the icon changes color",
+      selector: { boolean: {} },
+    },
+  ];
+
+  if (it.disableLabelColor) {
+    fields.push({
+      name: "useCustomLabelColor",
+      label: "Own color",
+      helper: "Override the theme default with a fixed custom color",
+      selector: { boolean: {} },
+    });
+  }
+
   return {
-    fields: [
-      {
-        name: "labelPosition",
-        label: "Label position",
-        helper: "Beside the badge instead of under it — a long reading then grows one way only",
-        selector: dropdown(opt("below", "Below"), opt("left", "Left"), opt("right", "Right")),
-      },
-      {
-        name: "labelSize",
-        label: "Label size",
-        selector: { number: { min: 8, max: 40, step: 1, mode: "slider", unit_of_measurement: "px" } },
-      },
-    ],
+    fields,
     data: {
       labelPosition: labelPositionOf(it),
       labelSize: it.labelSize ?? DEFAULT_LABEL_SIZE,
+      disableLabelColor: it.disableLabelColor ?? false,
+      useCustomLabelColor: it.useCustomLabelColor ?? false,
+      labelCustomColor: it.labelCustomColor ?? "",
     },
-    // Below is the default, so it stays out of the YAML.
-    toPatch: (p) =>
-      "labelPosition" in p && p.labelPosition === "below" ? { ...p, labelPosition: undefined } : p,
+    toPatch: (p) => {
+      const out = { ...p };
+
+      // IMPORTANT: Determine the actual future state
+      const isDisable = out.disableLabelColor ?? it.disableLabelColor ?? false;
+      const isCustom = out.useCustomLabelColor ?? it.useCustomLabelColor ?? false;
+
+      if (out.labelPosition === "below") out.labelPosition = undefined;
+      if (out.disableLabelColor === false) out.disableLabelColor = undefined;
+      if (out.useCustomLabelColor === false) out.useCustomLabelColor = undefined;
+
+      // Clean up based on the ACTUAL state
+      if (!isDisable) {
+        out.useCustomLabelColor = undefined;
+        out.labelCustomColor = undefined;
+      } else if (!isCustom) {
+        out.labelCustomColor = undefined;
+      }
+
+      if (out.labelCustomColor === "") out.labelCustomColor = undefined;
+
+      return out;
+    },
   };
 }
-
 /**
  * Group 4: the badge — what it holds, which reading, and how big it is.
  *
@@ -1127,6 +1204,13 @@ export function itemEffectsForm(it: FloorItem, deviceClass?: string): FormSpec |
 
 export function itemGroup7aForm(it: FloorItem): FormSpec {
   const fields: FormField[] = [
+    {
+      name: "showOnlyWhenZoomed",
+      label: "Only show when zoomed into area",
+      helper:
+        "Hidden on the full plan, and shown once the room it sits in is zoomed into",
+      selector: { boolean: {} },
+    },
     {
       name: "enableHideByEntity",
       label: "Hide by condition (Entire Object)",
@@ -1340,6 +1424,7 @@ export function itemGroup7aForm(it: FloorItem): FormSpec {
   return {
     fields,
     data: {
+      showOnlyWhenZoomed: it.showOnlyWhenZoomed ?? false,
       enableHideByEntity: it.enableHideByEntity ?? false,
       hideEntity: it.hideEntity ?? "",
       hideAttribute: it.hideAttribute ?? "",
@@ -1367,7 +1452,20 @@ export function itemGroup7aForm(it: FloorItem): FormSpec {
       hideBadgeThreshold: it.hideBadgeThreshold ?? 0,
       hideBadgeInvert: it.hideBadgeInvert ?? false,
     },
-    toPatch: identity,
+    // Off is the default, so it leaves no key behind — an untouched device's
+    // YAML stays as short as it was before this switch existed.
+    //
+    // Only when the user actually touched it, though. `_renderForm` diffs the
+    // form against the event and passes on just the keys that changed, and
+    // `_updateItem` merges with a spread — so a key that is merely *present*
+    // and undefined overwrites what the config had. Writing it unconditionally
+    // meant every one of this group's two dozen other fields silently switched
+    // this one off. The sibling forms all prune inside a walk of
+    // `Object.entries(patch)`, which has the same guard built in.
+    toPatch: (patch) =>
+      "showOnlyWhenZoomed" in patch
+        ? { ...patch, showOnlyWhenZoomed: patch.showOnlyWhenZoomed || undefined }
+        : patch,
   };
 }
 /** Group 7: when the device is drawn at all, and what a press does. */
@@ -1523,6 +1621,28 @@ export function furnitureForm(
         helper: "Clicking this piece changes floor — for a staircase",
         selector: dropdown(opt("", "Nothing"), opt("up", "Up one floor"), opt("down", "Down one floor")),
       },
+      // Actions on the piece itself (issue #284), offered on every piece the
+      // way a room's actions are — furniture with no entity can still navigate or call
+      // a service, and requiring one first would rule that out.
+      //
+      // The tap helper names what it replaces, but only when there is
+      // something to replace: on an ordinary piece a tap does nothing today,
+      // and claiming it "replaces the floor change" would describe a staircase
+      // this piece is not.
+      {
+        name: "tap_action",
+        label: "Tap action",
+        helper: f.goToFloor
+          ? "Replaces the floor change. Put an action on hold or double-tap to keep both"
+          : undefined,
+        selector: { ui_action: { default_action: "none" } },
+      },
+      { name: "hold_action", label: "Hold action", selector: { ui_action: { default_action: "none" } } },
+      {
+        name: "double_tap_action",
+        label: "Double-tap action",
+        selector: { ui_action: { default_action: "none" } },
+      },
     ],
     data: {
       type: f.type,
@@ -1532,6 +1652,9 @@ export function furnitureForm(
       angle: f.angle ?? 0,
       entity: f.entity ?? "",
       goToFloor: f.goToFloor ?? "",
+      tap_action: f.tap_action,
+      hold_action: f.hold_action,
+      double_tap_action: f.double_tap_action,
     },
     // "" is the empty option, and means the piece is ordinary furniture.
     toPatch: (p) => ("goToFloor" in p && !p.goToFloor ? { ...p, goToFloor: undefined } : p),
@@ -1765,6 +1888,18 @@ export function wallForm(w: Wall): FormSpec {
           number: { min: 2, max: MAX_SKIN_WALL_WIDTH, step: 1, mode: "slider", unit_of_measurement: "px" },
         },
       },
+      // Issue #182. A dropdown rather than a switch: a railing is one kind of
+      // line that is not a wall, and open-plan dividers are the next one asked
+      // about (#288).
+      {
+        name: "kind",
+        label: "Kind",
+        helper:
+          (w.kind ?? "wall") === "railing"
+            ? "Drawn thin; lamp light and sunlight carry on over it, and it seals off no dead space"
+            : "A railing is the low edge of a balcony, terrace or gallery",
+        selector: dropdown(opt("wall", "Wall"), opt("railing", "Railing")),
+      },
     ],
     data: {
       x1: Math.round(w.x1),
@@ -1772,10 +1907,15 @@ export function wallForm(w: Wall): FormSpec {
       x2: Math.round(w.x2),
       y2: Math.round(w.y2),
       thickness: w.thickness ?? WALL_THICKNESS,
+      kind: w.kind ?? "wall",
     },
-    // Keep the default out of the YAML so untouched walls stay terse.
-    toPatch: (p) =>
-      "thickness" in p && p.thickness === WALL_THICKNESS ? { ...p, thickness: undefined } : p,
+    // Keep the defaults out of the YAML so untouched walls stay terse.
+    toPatch: (p) => {
+      const out = { ...p };
+      if ("thickness" in p && p.thickness === WALL_THICKNESS) out.thickness = undefined;
+      if ("kind" in p) out.kind = p.kind === "railing" ? "railing" : undefined;
+      return out;
+    },
   };
 }
 
@@ -2090,6 +2230,13 @@ export function projectSunForm(c: FloorplanCardConfig): FormSpec {
 export function projectReliefForm(c: FloorplanCardConfig): FormSpec {
   const fields: FormField[] = [
     {
+      name: "ambientDaylight",
+      label: "Ambient daylight",
+      helper:
+        "Soft sky light through exterior windows and open or glazed doors, even when direct sun does not hit them",
+      selector: { boolean: {} },
+    },
+    {
       name: "sunlight",
       label: "Let the sun in",
       helper:
@@ -2145,6 +2292,7 @@ export function projectReliefForm(c: FloorplanCardConfig): FormSpec {
   return {
     fields,
     data: {
+      ambientDaylight: c.ambientDaylight ?? false,
       sunlight: c.sunlight ?? false,
       sunShade: c.sunShade ?? true,
       north: c.north ?? 0,
@@ -2153,13 +2301,20 @@ export function projectReliefForm(c: FloorplanCardConfig): FormSpec {
       sunBearing: c.sunBearing ?? DEFAULT_SUN_BEARING,
     },
     toPatch: (p) => {
-      const out = { ...p };
-      // Nothing left to aim or to paint, so all of it goes — every one of
-      // these keys is read only while the light is on, and left behind they
+      let out = { ...p };
+      // Ambient daylight is an independent opt-in; false is the default and
+      // therefore stays out of YAML even when direct sunlight is also toggled.
+      if ("ambientDaylight" in out && !out.ambientDaylight)
+        out = { ...out, ambientDaylight: undefined };
+      // Nothing left to aim or to paint, so all of the direct-sun state goes —
+      // every one of these keys is read only while the light is on, and left behind they
       // would sit in the YAML meaning nothing and come back stale on
       // re-enable. The colours are set by their own rows rather than by this
       // form, which is exactly why they have to be named here: nothing else
       // is watching this switch.
+      // ambientDaylight is deliberately absent from the list below: it is a
+      // sibling layer with its own switch, so turning the direct sun off must
+      // not silently turn the sky off with it.
       if ("sunlight" in out && !out.sunlight) {
         return {
           ...out,

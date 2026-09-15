@@ -21,6 +21,7 @@ import type {
   HaAreaInfo,
   StateColorRule,
   OverlayScale,
+  PaletteColor,
 } from "./types";
 import {
   normalizeSymbol,
@@ -69,10 +70,13 @@ import {
   resolveOpeningAmount,
   openingIsActive,
   wallsLightPassesThrough,
+  wallsThatBlock,
+  isRailing,
   glowClearSpan,
   openingHasTwoLeaves,
   secondLeafOf,
   renderGlowMask,
+  floorSwitcherAnchor,
   openingDefaultOpen,
   openingMotion,
   shutterStyleOf,
@@ -103,6 +107,7 @@ import {
   resolveStateColor,
   entityIsActive,
   lightBadgePaint,
+  itemIsOffline,
   itemRawValue,
   isRippleEntity,
   badgeContentOf,
@@ -116,6 +121,7 @@ import {
   itemLabelSize,
   textLabel,
   labelPositionOf,
+  itemLabelColor,
   itemReadings,
   itemHasLabel,
   snapToWall,
@@ -128,6 +134,17 @@ import {
 import { deadSpacesCached } from "./dead-space";
 import { cssColor, cssColorOr, cssNumber, contrastText } from "./css-safe";
 import { skinStyle, skinTokens, SKIN_ACCENT, SKIN_PAPER, SKIN_TEXT, SKIN_WALL } from "./skins";
+import {
+  paletteStyle,
+  paletteKey,
+  paletteEntries,
+  paletteRef,
+  paletteRefSlug,
+  paletteSlug,
+  resolvePaletteColor,
+  rewritePaletteRefs,
+  MAX_PALETTE,
+} from "./palette";
 import {
   ENDPOINT_SNAP,
   applyDelta,
@@ -203,6 +220,28 @@ const TOOL_META: Record<Tool, { icon: string; label: string }> = {
   area: { icon: "mdi:vector-polygon", label: "Area" },
 };
 
+/**
+ * Where the editor draws the switcher handle before it has been placed.
+ *
+ * An unplaced switcher sits 8px from the plan's top-right — a screen
+ * measurement, which the editor cannot turn into canvas units without knowing
+ * the rendered size. This is the same corner said in canvas units instead:
+ * close enough to reach for, and the moment it is dragged the stored position
+ * is exact. It is only ever a starting grip, never written to the config.
+ */
+const switcherHandleHome = (w: number, h: number) => ({ x: w * 0.93, y: h * 0.08 });
+
+/**
+ * How far the pointer must travel, in canvas units, before a press counts as a
+ * drag rather than a click — the jitter a real click or tap produces.
+ *
+ * Shared by `_applyDrag` and the floor-switcher handle so the two cannot drift:
+ * they were the same number written twice, with one of them comparing `<` and
+ * the other `<=`, so a move of exactly 4 units was a click for an element and a
+ * drag for the switcher.
+ */
+const DRAG_SLOP = 4;
+
 /** Icon shown in the Element header per selected element kind. */
 const SEL_KIND_ICON: Record<SelKind, string> = {
   wall: "mdi:wall",
@@ -237,6 +276,13 @@ interface Drag {
   snapshot?: FloorplanCardConfig;
   /** The redo stack as it stood before the drag's history push cleared it. */
   priorFuture?: FloorplanCardConfig[];
+  /**
+   * The undo stack as it stood before that same push. Restored wholesale on
+   * cancel, because the push is `slice(-HISTORY_MAX)`: on a full stack it
+   * evicts the oldest entry as well as adding a new one, and dropping the new
+   * one by identity leaves the evicted one gone for good.
+   */
+  priorHistory?: FloorplanCardConfig[];
   /**
    * Set if anything emitted while this drag was live. A drag normally emits
    * nothing until it is released, which is what lets cancel restore the
@@ -361,6 +407,27 @@ export class FloorplanCardEditor extends LitElement {
   /** Paste-a-symbol box in the Project panel, and its last validation error. */
   @state() private _symbolDraft = "";
   @state() private _symbolError = "";
+  @state() private _paletteError = "";
+  /** The switcher's own drag (issue #281); see `_renderSwitcherHandle`. */
+  @state() private _switcherDrag?: {
+    pointerId: number;
+    /** The handle that took capture — the listeners' `currentTarget` is the root. */
+    handle: Element;
+    moved: boolean;
+    /** Where the pointer went down, so a click can be told from a drag. */
+    at: { x: number; y: number };
+    /** The config before the drag, so a cancel can put it back locally. */
+    before: FloorplanCardConfig;
+    /** The redo stack the first-movement history push cleared. */
+    priorFuture: FloorplanCardConfig[];
+    /**
+     * The whole undo stack as it stood before the first-movement push, so a
+     * cancel can restore it wholesale. Dropping the pushed entry by identity
+     * is not enough: that push is `slice(-HISTORY_MAX)`, so on a full stack it
+     * also evicts the oldest entry, which no amount of filtering brings back.
+     */
+    priorHistory?: FloorplanCardConfig[];
+  };
   /** Project section expanded? Collapsed by default — page settings are touched rarely. */
   @state() private _projectOpen = false;
   /**
@@ -410,6 +477,22 @@ export class FloorplanCardEditor extends LitElement {
    */
   private _dragMoves = new FrameCoalescer<DragMove>(rafScheduler, (move) => {
     if (this._drag) this._applyDrag(move);
+  });
+  /**
+   * The switcher drag's moves, coalesced to one a frame (issue #281).
+   *
+   * Same reason as `_dragMoves` above: a pointer reports faster than the
+   * browser paints, and `_config` is reactive — applying every raw move
+   * re-renders the whole editor per event and leaves the handle further behind
+   * the cursor the longer the drag runs.
+   */
+  private _switcherMoves = new FrameCoalescer<{ x: number; y: number }>(rafScheduler, (at) => {
+    if (!this._switcherDrag) return;
+    // Only the anchor moves. Unlike every other drag this one cannot change
+    // which entities the card watches — `floorSwitcher` is a point and binds
+    // nothing — so there is no `collectWatchedEntities` here: rescanning the
+    // whole config per frame to arrive at the same set is work for nothing.
+    this._config = { ...this._config, floorSwitcher: { x: at.x, y: at.y } };
   });
   /** A drag changed the config and the host has not been told yet. */
   private _dragDirty = false;
@@ -465,12 +548,29 @@ export class FloorplanCardEditor extends LitElement {
     // overlays had their chance to absorb the key (see _onHostKeyDown).
     this.addEventListener("keydown", this._onHostKeyDown);
     window.addEventListener("focusin", this._onFocusIn);
+    // The floor-switcher drag owns its pointer here rather than on the handle
+    // (issue #281). Capture is best-effort — `_capturePointer` swallows the
+    // failure — and without it every event lands on whatever the cursor is
+    // over: the SVG, an item badge, a text label, each with handlers of its
+    // own that know nothing about this drag and clear `_gesturePointer` on
+    // release, stranding the handle. Patching the targets one at a time
+    // misses the next one. The shadow root is an ancestor of all of them, and
+    // in the capture phase it sees each event before any target does, so the
+    // drag is finished the same way whichever element the pointer is over.
+    const root = this.renderRoot as EventTarget;
+    root.addEventListener("pointermove", this._onSwitcherMove as EventListener, true);
+    root.addEventListener("pointerup", this._onSwitcherUp as EventListener, true);
+    root.addEventListener("pointercancel", this._onSwitcherCancel as EventListener, true);
   }
 
   public disconnectedCallback(): void {
     window.removeEventListener("keydown", this._onKeyDown, true);
     this.removeEventListener("keydown", this._onHostKeyDown);
     window.removeEventListener("focusin", this._onFocusIn);
+    const root = this.renderRoot as EventTarget;
+    root.removeEventListener("pointermove", this._onSwitcherMove as EventListener, true);
+    root.removeEventListener("pointerup", this._onSwitcherUp as EventListener, true);
+    root.removeEventListener("pointercancel", this._onSwitcherCancel as EventListener, true);
     if (this._applyResetTimer !== null) clearTimeout(this._applyResetTimer);
     // HA's dialog reparents the editor, so this can land mid-drag. Removal
     // takes the pointer capture with it, so the gesture is over either way:
@@ -485,6 +585,20 @@ export class FloorplanCardEditor extends LitElement {
     this._dragMoves.cancel();
     this._flushDrag();
     this._drag = null;
+    // Same reasoning for the switcher (issue #281): removal takes the capture
+    // with it, so the gesture is over either way. `_config` is the host's only
+    // copy of where it was dropped, so hand that over rather than rolling back
+    // — a reparent mid-drag should not silently undo the move.
+    // Settled, not dropped — the opposite of the element drag above, for a
+    // reason specific to this one. `moved` is set the instant the pointer
+    // passes the slop, before any frame has run, so a drag torn down between
+    // those two moments would otherwise emit the *pre-drag* config as if it
+    // were the result: a config-changed that says nothing changed. The queued
+    // value is a plain point with no DOM dependency, so settling it is safe
+    // and means `moved` always corresponds to a real position.
+    this._switcherMoves.settle();
+    if (this._switcherDrag?.moved) this._emit(this._config);
+    this._switcherDrag = undefined;
     this._gesturePointer = null;
     this._resetPinch();
     super.disconnectedCallback();
@@ -514,6 +628,12 @@ export class FloorplanCardEditor extends LitElement {
     // A setConfig that isn't the echo of our own emission is an external change
     // (YAML-tab edit, a different card loaded into the dialog): stale undo/redo
     // snapshots would silently revert it, so drop them.
+    //
+    // The identity check is the fast path and not the guarantee: HA hands our
+    // own object straight back, but anything patching the editor between the
+    // two can replace it with a copy. card-mod deep-clones every config on its
+    // way in, so with it installed this comparison is always the deep one --
+    // which is why `_lastEmitted` has to be a snapshot nobody else holds.
     if (this._lastEmitted && config !== this._lastEmitted && !configsEqual(config, this._lastEmitted)) {
       this._history = [];
       this._future = [];
@@ -891,7 +1011,15 @@ export class FloorplanCardEditor extends LitElement {
     for (const key of ["walls", "openings", "items", "texts", "furniture", "trackers", "areas"] as const) {
       if (!out[key]?.length) delete out[key];
     }
-    this._lastEmitted = out;
+    // A snapshot, not the object being handed out. `out` travels on the event
+    // and whoever catches it may write to it before HA hands it back: card-mod
+    // patches the editor's config-changed handler and puts the user's
+    // `card_mod` block *back onto this very object* on its way past. Keeping a
+    // reference here meant comparing the next setConfig against a config we
+    // never emitted -- it had grown a key -- so the echo never matched, every
+    // edit looked like an external YAML change, and the undo stack was cleared
+    // on every keystroke (issue #257).
+    this._lastEmitted = structuredClone(out);
     this.dispatchEvent(
       new CustomEvent("config-changed", { detail: { config: out }, bubbles: true, composed: true })
     );
@@ -1025,7 +1153,11 @@ export class FloorplanCardEditor extends LitElement {
       this._draft ||
       this._draftTracker ||
       this._draftArea ||
-      this._marquee
+      this._marquee ||
+      // The switcher's drag is a gesture like any other (issue #281): an undo
+      // or a nudge landing mid-drag would interleave with its history snapshot
+      // and its eventual emit.
+      this._switcherDrag
     );
     // Backspace pops the last placed vertex instead of deleting a selected
     // element while an Area draft is in progress (checked ahead of the
@@ -1084,7 +1216,14 @@ export class FloorplanCardEditor extends LitElement {
         this._addQuery = "";
         return;
       }
-      if (this._draft || this._draftTracker || this._draftArea || this._marquee || this._drag) {
+      if (
+        this._draft ||
+        this._draftTracker ||
+        this._draftArea ||
+        this._marquee ||
+        this._drag ||
+        this._switcherDrag
+      ) {
         ev.preventDefault();
         ev.stopPropagation();
         this._cancelGesture();
@@ -1257,6 +1396,10 @@ export class FloorplanCardEditor extends LitElement {
    * between — is dropped, so a canceled drag leaves no trace in undo.
    */
   private _cancelGesture(): void {
+    // The switcher's drag (issue #281) rolls back through here like every
+    // other gesture, which is what puts it on the Escape cascade and the
+    // no-buttons path without either of them naming it.
+    this._rollBackSwitcherDrag();
     // Whatever the drag accumulated is about to be replaced by its snapshot.
     this._dragMoves.cancel();
     this._dragDirty = false;
@@ -1269,7 +1412,7 @@ export class FloorplanCardEditor extends LitElement {
     const drag = this._drag;
     this._drag = null;
     if (drag?.moved && drag.snapshot) {
-      this._history = this._history.filter((c) => c !== drag.snapshot);
+      this._history = drag.priorHistory ?? this._history.filter((c) => c !== drag.snapshot);
       if (drag.emitted) {
         this._emit(drag.snapshot);
       } else {
@@ -1301,7 +1444,10 @@ export class FloorplanCardEditor extends LitElement {
     // A gesture with no buttons held means pointerup never reached us
     // (alt-tab, dialog retarget) — treat it as canceled instead of letting
     // the element chase the hovering mouse.
-    if (ev.buttons === 0 && (this._drag || this._draft || this._draftTracker || this._marquee)) {
+    if (
+      ev.buttons === 0 &&
+      (this._drag || this._draft || this._draftTracker || this._marquee)
+    ) {
       this._cancelGesture();
       return;
     }
@@ -1503,9 +1649,10 @@ export class FloorplanCardEditor extends LitElement {
     // taps produce — doesn't spam history or wipe the redo stack. Threshold
     // matches the marquee's click-vs-drag test.
     if (!drag.moved) {
-      if (Math.hypot(p.x - drag.start.x, p.y - drag.start.y) <= 4) return;
+      if (Math.hypot(p.x - drag.start.x, p.y - drag.start.y) <= DRAG_SLOP) return;
       drag.moved = true;
       drag.priorFuture = this._future;
+      drag.priorHistory = this._history;
       this._pushHistory();
       drag.snapshot = this._history[this._history.length - 1];
     }
@@ -2096,6 +2243,88 @@ export class FloorplanCardEditor extends LitElement {
    * Every colour in this editor is one of these. It lived as eight copies of
    * the same markup before the colour rules below needed a ninth.
    */
+  /**
+   * The plan's named colours (issue #265), usable and deduped.
+   */
+  private _palette(): PaletteColor[] {
+    return paletteEntries(this._config?.palette);
+  }
+
+  /**
+   * The dropdown that puts a named colour into a colour field, or `nothing`
+   * when the plan has no palette.
+   *
+   * Rendering nothing is the point of the empty case: a plan that never names a
+   * colour should see the editor it saw before this feature existed, not a
+   * dropdown with one greyed-out entry in it. The control appears the moment
+   * the first name is added under Project and disappears with the last.
+   *
+   * Choosing a name stores a `var()` reference rather than the colour itself,
+   * which is what makes the link live — see `src/palette.ts`. Choosing "Custom"
+   * writes back the colour the name currently resolves to, so leaving the
+   * palette breaks the link without changing what is on screen.
+   */
+  private _renderPalettePicker(
+    value: string | undefined,
+    onCommit: (color: string | undefined) => void
+  ): TemplateResult | typeof nothing {
+    const palette = this._palette();
+    if (!palette.length) return nothing;
+    // Only a slug the palette actually has counts as "on a name". A reference
+    // to a name that is gone matches no <option>, so the browser falls back to
+    // showing "Custom…" while this thought otherwise — and picking "Custom…"
+    // would then commit the dangling value back unchanged, spending an undo
+    // step on nothing. Reading it as custom is also what the plan shows, since
+    // a dangling reference is not a colour.
+    const slug = paletteRefSlug(value);
+    const current = slug && palette.some((p) => paletteSlug(p.name) === slug) ? slug : undefined;
+    // `.value` as well as `?selected`: the attribute only sets what the option
+    // defaults to, and once the user has picked from this dropdown the option is
+    // dirty and stops following it. Selecting another element, or undoing, would
+    // otherwise leave the control showing a name the field is not on — and
+    // picking "Custom…" from that stale state does nothing, because the field
+    // was never on a name to leave.
+    return html`
+      <select
+        class="palette-pick"
+        title="Use one of the plan's named colours"
+        .value=${current ?? ""}
+        @change=${(e: Event) => {
+          const slug = (e.target as HTMLSelectElement).value;
+          if (!slug) {
+            // Back to a literal: keep what is drawn, drop the link. Nothing to
+            // do if the field was never on a name — committing the value it
+            // already has would spend an undo step on no change.
+            if (current) onCommit(resolvePaletteColor(value, palette) as string);
+            return;
+          }
+          const hit = palette.find((p) => paletteSlug(p.name) === slug);
+          if (hit) onCommit(paletteRef(hit.name));
+        }}
+      >
+        <option value="" ?selected=${!current}>Custom…</option>
+        ${palette.map(
+          (p) => html`<option
+            value=${paletteSlug(p.name)}
+            ?selected=${paletteSlug(p.name) === current}
+          >
+            ${p.name}
+          </option>`
+        )}
+      </select>
+    `;
+  }
+
+  /**
+   * What an `<input type="color">` should show for a stored value: the literal
+   * colour a palette reference names, since the swatch cannot resolve a var()
+   * and would sit on black instead.
+   */
+  private _swatchValue(value: string | undefined, fallback: string): string {
+    const resolved = resolvePaletteColor(value, this._config?.palette);
+    return typeof resolved === "string" && resolved ? resolved : fallback;
+  }
+
   private _renderColorRow(opts: {
     label: string;
     value: string | undefined;
@@ -2113,7 +2342,7 @@ export class FloorplanCardEditor extends LitElement {
         <input
           type="color"
           title=${opts.title ?? nothing}
-          .value=${opts.value ?? opts.swatch}
+          .value=${this._swatchValue(opts.value, opts.swatch)}
           @input=${(e: Event) => opts.onLive((e.target as HTMLInputElement).value)}
         />
         <input
@@ -2122,6 +2351,7 @@ export class FloorplanCardEditor extends LitElement {
           .value=${opts.value ?? ""}
           @change=${(e: Event) => opts.onCommit((e.target as HTMLInputElement).value || undefined)}
         />
+        ${this._renderPalettePicker(opts.value, opts.onCommit)}
       </div>
     `;
   }
@@ -2225,7 +2455,7 @@ export class FloorplanCardEditor extends LitElement {
     ["Shape", ["type", "hand", "w", "h", "angle"]],
     ["What it reads", ["entity"]],
     // What clicking it does — a staircase that changes floor (issue #121).
-    ["Behavior", ["goToFloor"]],
+    ["Behavior", ["goToFloor", "tap_action", "hold_action", "double_tap_action"]],
   ] as const;
 
   private static readonly TRACKER_GROUPS = [
@@ -2465,7 +2695,7 @@ export class FloorplanCardEditor extends LitElement {
                 : html`<span class="cond hint">any other value</span>`}
             <input
               type="color"
-              .value=${rule.color || "#ff0000"}
+              .value=${this._swatchValue(rule.color, "#ff0000")}
               @input=${(e: Event) => patch(i, { color: (e.target as HTMLInputElement).value })}
             />
             <input
@@ -2475,6 +2705,7 @@ export class FloorplanCardEditor extends LitElement {
               .value=${rule.color ?? ""}
               @change=${(e: Event) => patch(i, { color: (e.target as HTMLInputElement).value })}
             />
+            ${this._renderPalettePicker(rule.color, (color) => patch(i, { color: color ?? "" }))}
             ${opts?.icons
               ? // Empty means "keep the device's icon", so the device's icon is
                 // the placeholder — the rule shows what leaving it blank gives
@@ -2992,14 +3223,14 @@ export class FloorplanCardEditor extends LitElement {
     // Dead spaces (issue #88) — derived from the walls and openings, so they
     // follow every edit without anything being stored.
     const deadSpaceRings = c.showDeadSpaces
-      ? deadSpacesCached(floor.walls, floor.openings)
+      ? deadSpacesCached(wallsThatBlock(floor.walls), floor.openings)
       : [];
     // Walls as light meets them (issue #143), same as the card — so dropping a
     // door into a wall spills the pool through it while you are still drawing.
     // Skipped entirely on a floor with no cast light, which is most of them:
     // this sits on the path of every keystroke and drag in the editor.
     const lightWalls = floor.items.some((it) => it.glow)
-      ? wallsLightPassesThrough(floor.walls, floor.openings, (o) => {
+      ? wallsLightPassesThrough(wallsThatBlock(floor.walls), floor.openings, (o) => {
           const amt = (id?: string) =>
             resolveOpeningAmount(o, id ? this.hass?.states[id] : undefined);
           // Same reading as the card, second leaf included (issue #145),
@@ -3017,7 +3248,7 @@ export class FloorplanCardEditor extends LitElement {
             o.shutterEntity ? shutterAmount(this.hass?.states[o.shutterEntity], o.shutterInvert) : undefined
           );
         })
-      : floor.walls;
+      : wallsThatBlock(floor.walls);
     const floorEmpty =
       !floor.walls.length &&
       !floor.openings.length &&
@@ -3314,14 +3545,17 @@ export class FloorplanCardEditor extends LitElement {
           <div class="stage ${overlay === "plan" ? "scale-plan" : ""}"
                style="aspect-ratio: ${cssNumber(c.width, DEFAULT_WIDTH)} / ${cssNumber(
             c.height, DEFAULT_HEIGHT)}; width:${this._zoom * 100}%;
-                   --fp-plan-w: ${cssNumber(c.width, DEFAULT_WIDTH)};${skinStyle(c.skin)}">
-            <!-- Keyed on the skin, for the repaint reason documented on the
-                 card's SVG (issue #122): a var() inside a presentation
-                 attribute does not repaint when the custom property changes,
-                 so without this the canvas kept the previous skin's doors and
-                 room fills. -->
+                   --fp-plan-w: ${cssNumber(c.width, DEFAULT_WIDTH)};${skinStyle(
+            c.skin
+          )}${paletteStyle(c.palette)}">
+            <!-- Keyed on the skin and the palette, for the repaint reason
+                 documented on the card's SVG (issue #122): a var() inside a
+                 presentation attribute does not repaint when the custom
+                 property changes, so without this the canvas kept the previous
+                 skin's doors and room fills — and, since issue #265, would show
+                 a palette colour's old value while you were editing it. -->
             ${keyed(
-              c.skin ?? "",
+              `${c.skin ?? ""}|${paletteKey(c.palette)}`,
               svg`<svg
               viewBox="0 0 ${c.width} ${c.height}"
               preserveAspectRatio="none"
@@ -3455,6 +3689,7 @@ export class FloorplanCardEditor extends LitElement {
             </svg>`
             )}
             <div class="items">
+              ${(c.floors ?? []).length > 1 ? this._renderSwitcherHandle(c) : nothing}
               ${floor.texts.map((t) => this._renderTextOverlay(t, c, overlay))}
               ${floor.openings
                 .filter((o) => hasShutterMark(o))
@@ -4009,9 +4244,9 @@ export class FloorplanCardEditor extends LitElement {
               class="wall-hit"
               @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "wall", id: w.id })} />
         <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
-              class="wall ${selected ? "selected" : ""}"
+              class="wall ${selected ? "selected" : ""} ${isRailing(w) ? "railing" : ""}"
               mask=${`url(#${this._wallMaskId})`}
-              style=${wallStrokeStyle(w.thickness)} stroke-linecap="round" /></g>
+              style=${wallStrokeStyle(w.thickness, w.kind)} stroke-linecap="round" /></g>
         ${
           handles
             ? svg`
@@ -4033,6 +4268,9 @@ export class FloorplanCardEditor extends LitElement {
          @pointerdown=${(e: PointerEvent) => this._startDrag(e, { kind: "opening", id: o.id })}>
         ${renderOpening(o, {
           color: selected ? "var(--primary-color, #03a9f4)" : SKIN_WALL,
+          // The closed colour previews here too (issue #228) — unless this is
+          // the selected opening, whose whole symbol goes blue to show that.
+          inactive: selected ? undefined : o.inactiveColor,
           open: openingDefaultOpen(o),
           // Draw sliding / rolling openings partly open in the editor so the
           // motion is visible — closed, both look like a plain band, which
@@ -4290,7 +4528,7 @@ export class FloorplanCardEditor extends LitElement {
     // will actually render (state rules first, then the active colour).
     const rawValue = itemRawValue(it, st);
     const stateColor = cssColor(resolveStateColor(it.stateColor, rawValue));
-    // …and the same badge contents, so "Badge shows: Value" previews here too.
+    const labelColor = itemLabelColor(it, stateColor);
     const value = badgeContentOf(it) === "value" ? badgeValue(this.hass, it) : undefined;
     // The active colour — the one the user set, else the bulb's own colour
     // (issue #106). The canvas never previewed either, so setting "Active
@@ -4298,8 +4536,24 @@ export class FloorplanCardEditor extends LitElement {
     // both are the same one line, so both land together.
     const active = entityIsActive(it.entity, st?.state);
     const activeColor = active ? (cssColor(it.activeColor) ?? lightBadgePaint(st)) : undefined;
+    // Its counterpart (issue #228), previewed for the same reason: a field
+    // that changes nothing on the canvas reads as a field that does nothing.
+    //
+    // Offline stands down here exactly as it does on the card, and the reason
+    // is the same one: an entity that has dropped out is not active either, so
+    // without this a dead sensor previews in the loudest colour on the plan as
+    // though it were genuinely shut (issue #162). It also has to be the same
+    // *because* it is a preview — one that disagrees with the card is worse
+    // than none, since the plan gets tuned against a picture the dashboard
+    // will not draw. `hass` is guarded for the card's reason too: before the
+    // first states arrive every device reads as offline.
+    const offline = !!this.hass && itemIsOffline(it, st?.state);
+    const inactiveColor = active || offline ? undefined : cssColor(it.inactiveColor);
     // Ink that reads on whatever the badge ends up painted, same rule as the card.
-    const badgeInk = contrastText(stateColor ?? activeColor);
+    // Palette references resolved first, for the reason the card documents.
+    const badgeInk = contrastText(
+      resolvePaletteColor(stateColor ?? activeColor ?? inactiveColor, this._config?.palette)
+    );
     const rippleColor =
       it.rippleColor ?? stateColor ?? activeColor ?? SKIN_ACCENT;
     const rippleSize = it.rippleSize ?? DEFAULT_RIPPLE_SIZE;
@@ -4319,12 +4573,14 @@ export class FloorplanCardEditor extends LitElement {
         ? "state-colored"
         : active
           ? "active-colored"
-          : ""}"
+          : inactiveColor
+            ? "inactive-colored"
+            : ""}"
       style="width:${box};height:${box};transform:rotate(${cssNumber(it.angle, 0)}deg);${
         stateColor ? `--fp-state:${stateColor};` : ""
       }${activeColor ? `--fp-active:${activeColor};` : ""}${
-        badgeInk ? `--fp-ink:${badgeInk};` : ""
-      }"
+        inactiveColor ? `--fp-inactive:${inactiveColor};` : ""
+      }${badgeInk ? `--fp-ink:${badgeInk};` : ""}"
     >
       ${value
         ? html`<span
@@ -4372,17 +4628,222 @@ export class FloorplanCardEditor extends LitElement {
              The Labels toolbar toggle hides either on dense plans (issue
              #52), and the size previews the card's labelSize (issue #59). -->
         ${this._hideLabels
-          ? nothing
-          : html`<span
-              class="ilabel ${cardLabel ? "live" : ""} ilabel-${labelPositionOf(it)}"
-              style="font-size:${overlayLength(
-                cardLabel || it.labelSize != null ? itemLabelSize(it.labelSize) : 11,
-                scale
-              )};${cardLabel && stateColor ? `color:${stateColor};` : ""}"
-              >${label}</span
-            >`}
+        ? nothing
+        : html`<span
+            class="ilabel ${cardLabel ? "live" : ""} ilabel-${labelPositionOf(it)}"
+            style="font-size:${overlayLength(
+              cardLabel || it.labelSize != null ? itemLabelSize(it.labelSize) : 11,
+              scale
+            )};${cardLabel && labelColor ? `color:${labelColor};` : ""}"
+            >${label}</span
+          >`}
       </div>
     `;
+  }
+
+  /**
+   * The floor switcher, draggable on the canvas (issue #281) — "the most
+   * flexible solution would be to make this part freely movable, like a piece
+   * of furniture", and the maintainer's "lets start with full freedom".
+   *
+   * Deliberately **not** a {@link SelKind}. Every kind in that union names a
+   * per-floor array of things with ids, and the editor's machinery reads it
+   * that way throughout: snapshots, group drags, locking, duplicate, delete,
+   * the selection summary and its icon. The switcher is one card-level thing
+   * with no id, and none of those operations mean anything for it — adding a
+   * kind would have put a special case in each of them, which is a lot of
+   * places to be wrong in.
+   *
+   * So it carries its own small drag instead: three handlers and one field,
+   * touching nothing the selection model owns.
+   */
+  private _renderSwitcherHandle(c: FloorplanCardConfig): TemplateResult {
+    // (see switcherHandleHome for where an unplaced handle sits)
+    const w = cssNumber(c.width, DEFAULT_WIDTH);
+    const h = cssNumber(c.height, DEFAULT_HEIGHT);
+    const at = floorSwitcherAnchor(c) ?? switcherHandleHome(w, h);
+    const placed = !!floorSwitcherAnchor(c);
+    const floors = c.floors ?? [];
+    return html`
+      <div
+        class="switcher-handle ${c.compactHeader === true ? "row" : ""} ${this
+          ._switcherDrag
+          ? "dragging"
+          : ""} ${placed ? "" : "default"} ${this._tool === "select" ? "" : "passive"}"
+        style="left:${(at.x / w) * 100}%; top:${(at.y / h) * 100}%;"
+        title=${placed
+          ? "Drag to move the floor switcher"
+          : "Drag to move the floor switcher off the corner"}
+        @pointerdown=${this._onSwitcherDown}
+        @lostpointercapture=${this._onSwitcherCancel}
+      >
+        ${floors.map(
+          (f: Floor) => html`<span class="sh-btn ${f.id === this._activeFloorId ? "active" : ""}"
+            >${f.short || f.name}</span
+          >`
+        )}
+      </div>
+    `;
+  }
+
+  private _onSwitcherDown = (ev: PointerEvent): void => {
+    if (this._tool !== "select") return;
+    // Primary button only, as `_onCanvasDown` requires. A right-button press
+    // reports `buttons === 2`, which the no-buttons guard below does not catch
+    // — so without this a right-drag repositioned the switcher instead of
+    // opening the context menu.
+    if (ev.button !== 0) return;
+    // One gesture at a time, the same gate every other pointer path honours.
+    // Without it a second touch could start this drag on top of a live element
+    // drag or marquee, and two touches on the handle could overwrite each
+    // other's rollback state.
+    if (this._gesturePointer !== null) return;
+    // Kept off the canvas: without this the pointerdown reaches the stage and
+    // starts a marquee behind the thing being dragged.
+    ev.stopPropagation();
+    // preventDefault suppresses native focusing, so move focus explicitly, the
+    // way `_onOverlayDown` does. It is not cosmetic here: the handle is not
+    // focusable, so focus would otherwise stay in whatever was focused before —
+    // and starting the drag from the X/Y fields left it in a text input, where
+    // `isTypingPath` rejects Escape and the drag could not be canceled at all.
+    ev.preventDefault();
+    this._canvasWrap?.focus({ preventScroll: true });
+    const handle = ev.currentTarget as Element;
+    // The editor's guarded helper, not the DOM method: setPointerCapture
+    // throws for a pointer that is not active, which a synthetic or
+    // re-targeted event can easily be.
+    this._switcherDrag = {
+      pointerId: ev.pointerId,
+      handle,
+      moved: false,
+      at: this._toVirtual(ev, false),
+      before: this._config,
+      priorFuture: this._future,
+    };
+    this._gesturePointer = ev.pointerId;
+    this._capturePointer(ev, handle);
+  };
+
+  private _onSwitcherMove = (ev: PointerEvent): void => {
+    const d = this._switcherDrag;
+    if (!d || d.pointerId !== ev.pointerId) return;
+    ev.stopPropagation();
+    // A move with nothing held means the release never reached us (alt-tab, a
+    // dialog taking the pointer). The other drags treat that as a cancel
+    // rather than letting the element chase the hovering cursor.
+    if (ev.buttons === 0) {
+      this._forgetSwitcherTouch(ev);
+      this._cancelGesture();
+      return;
+    }
+    const raw = this._toVirtual(ev, false);
+    // Below the slop a press is a click, not a drag. Without this the browser
+    // delivering a zero- or one-pixel move on an ordinary click would push
+    // history and write a position — which is exactly what the "a click does
+    // not place it" rule promises it will not do.
+    // `<=`, matching `_applyDrag` exactly: at precisely the slop this is a
+    // click everywhere else in the editor, and one control disagreeing about
+    // where a click stops being a click is the kind of difference nobody finds
+    // on purpose.
+    if (!d.moved && Math.hypot(raw.x - d.at.x, raw.y - d.at.y) <= DRAG_SLOP) return;
+    // History once per drag, not once per frame, so undo steps back over the
+    // whole move. The snapshot it pushes is the config as it stood before —
+    // which is what a rollback puts back, and removes from the stack.
+    if (!d.moved) {
+      d.priorHistory = this._history;
+      this._pushHistory();
+      d.moved = true;
+    }
+    // Local, not emitted. Every other drag in this editor writes to `_config`
+    // while it is live and emits once on release, and both halves matter: the
+    // host is spared a `config-changed` (and the card-stack re-render behind
+    // it) per frame, and — because nothing has been emitted — a rollback can
+    // put the old config back locally instead of emitting its way out.
+    this._switcherMoves.push(this._toVirtual(ev));
+  };
+
+  private _onSwitcherUp = (ev: PointerEvent): void => {
+    const d = this._switcherDrag;
+    if (!d || d.pointerId !== ev.pointerId) return;
+    // Stopped here, in the capture phase, so no target underneath — the canvas,
+    // a badge — also treats this release as the end of a gesture of its own.
+    ev.stopPropagation();
+    this._forgetSwitcherTouch(ev);
+    this._releasePointer(ev, d.handle);
+    // Land where the pointer was actually released. The last `pointermove` is
+    // not a safe stand-in: moves are coalesced, and a release can report a
+    // point no move ever did, so settling the queue alone would drop the
+    // switcher short of where it was let go. Only once the drag has moved —
+    // a press that never passed the slop is a click, and still places nothing.
+    // Settled while `_switcherDrag` is set, since the coalescer checks it.
+    if (d.moved) this._switcherMoves.push(this._toVirtual(ev));
+    this._switcherMoves.settle();
+    this._switcherDrag = undefined;
+    this._gesturePointer = null;
+    // `_emit`, not `_commit`: the history entry was pushed at first movement,
+    // and committing would push the finished position as a second one — so the
+    // first undo would restore the config you are already looking at.
+    //
+    // A press that never passed the slop emits nothing: it would otherwise pin
+    // the switcher to wherever the corner happened to be, turning a stray tap
+    // into an edit.
+    if (d.moved) this._emit(this._config);
+  };
+
+  /**
+   * A drag taken away rather than finished — a touch interrupted, a dialog
+   * stealing the pointer, capture lost, Escape.
+   *
+   * The work is in `_rollBackSwitcherDrag` so that `_cancelGesture` can call it
+   * too: routing every abort through the editor's one cancel path is what puts
+   * this gesture on the Escape cascade and the no-buttons guard without either
+   * of them having to know it exists.
+   */
+  private _onSwitcherCancel = (ev: PointerEvent): void => {
+    const d = this._switcherDrag;
+    if (!d || d.pointerId !== ev.pointerId) return;
+    ev.stopPropagation();
+    this._forgetSwitcherTouch(ev);
+    this._releasePointer(ev, d.handle);
+    this._rollBackSwitcherDrag();
+  };
+
+  /**
+   * Take the drag's finger out of the pinch bookkeeping.
+   *
+   * `_onWrapPointerDown` counts every touch that lands on the canvas, the
+   * switcher's included, and only `_onWrapPointerEnd` takes it out again. The
+   * drag's own listeners run first — on the shadow root, above `.canvas-wrap`
+   * — and stop the event, so that end handler never hears this finger lift.
+   * Left counted, the next single touch reads as a second finger and starts a
+   * pinch nobody is making. Called on every path that ends the drag's pointer,
+   * before the event is stopped from reaching the wrap.
+   */
+  private _forgetSwitcherTouch(ev: PointerEvent): void {
+    this._onWrapPointerEnd(ev);
+  }
+
+  /**
+   * Put the config back as it was before the switcher drag started.
+   *
+   * Nothing was emitted while it was live, so the host still holds the pre-drag
+   * config and restoring it locally spares a round trip. The undo stack and the
+   * redo stack are both put back as they stood before the first-movement push,
+   * so a canceled drag is a complete no-op — the same contract `_cancelGesture`
+   * keeps for an element drag.
+   */
+  private _rollBackSwitcherDrag(): void {
+    const d = this._switcherDrag;
+    if (!d) return;
+    // Whatever is queued is about to be replaced by the pre-drag config.
+    this._switcherMoves.cancel();
+    this._switcherDrag = undefined;
+    this._gesturePointer = null;
+    if (!d.moved) return;
+    if (d.priorHistory) this._history = d.priorHistory;
+    this._config = d.before;
+    this._watchedEntities = collectWatchedEntities(d.before);
+    this._future = d.priorFuture;
   }
 
   private _renderTextOverlay(
@@ -4483,6 +4944,20 @@ export class FloorplanCardEditor extends LitElement {
           this._renderForm(projectDeadSpaceForm(c), patch)
         )}
         ${this._renderGroup(
+          // Named colours (issue #265). Its own group rather than a row inside
+          // Look: it is a list that grows, and it is the one thing here that
+          // other panels reach back into.
+          "Named colors",
+          this._renderPalettePanel()
+        )}
+        ${this._renderGroup(
+          // Where the floor switcher sits (issue #281). Under Project because
+          // it is one control for the whole card, not a property of a floor —
+          // and next to the plan's own look, which is what it sits on.
+          "Floor switcher",
+          this._renderSwitcherPlacement()
+        )}
+        ${this._renderGroup(
           // Per floor, not per project — but it is the floor's paper, so it
           // belongs beside the plan's own.
           "Floor image",
@@ -4569,6 +5044,310 @@ export class FloorplanCardEditor extends LitElement {
    * becoming a broken glyph on the plan. Nothing pasted is ever parsed as
    * markup; see `symbols.ts`.
    */
+  /**
+   * The plan's named colours (issue #265): *"I hate copying color hex codes
+   * across so many entities."*
+   *
+   * Names are stored, but what elements store is a `var()` built from the name
+   * (see `src/palette.ts`), so the two edits that could strand a reference are
+   * the ones this panel has to be careful about — and both are handled by
+   * rewriting the plan rather than by warning about it:
+   *
+   * - **Rename** rewrites every reference to the new name, so the link
+   *   survives. Blocked when the new name would collide with another entry,
+   *   since two entries sharing a slug means one of them silently stops
+   *   resolving.
+   * - **Delete** rewrites every reference to the literal colour the entry held.
+   *   A dangling `var()` is not a colour at all, so the alternative is elements
+   *   turning black the moment a name is removed. This way the plan looks
+   *   exactly the same afterwards and has simply lost the link.
+   */
+  private _renderPalettePanel(): TemplateResult {
+    const list = this._config.palette ?? [];
+    const commit = (next: PaletteColor[]) =>
+      this._patchConfig({ palette: next.length ? next : undefined });
+    const at = (i: number, part: Partial<PaletteColor>, live = false) => {
+      const next = list.map((p, j) => (j === i ? { ...p, ...part } : p));
+      if (live) this._patchConfigLive({ palette: next });
+      else this._patchConfig({ palette: next });
+    };
+
+    return html`
+      <div class="row col palette-panel">
+        <label>Named colors</label>
+        ${list.length
+          ? nothing
+          : html`<span class="hint"
+              >Name a color here and every color field on the plan can point at it.</span
+            >`}
+        ${list.map(
+          (p, i) => html`
+            <div class="row wide palette-row">
+              <input
+                type="text"
+                class="palette-name"
+                placeholder="Warm"
+                .value=${p.name ?? ""}
+                @change=${(e: Event) =>
+                  this._renamePaletteColor(i, e.target as HTMLInputElement)}
+              />
+              <input
+                type="color"
+                .value=${this._swatchValue(p.color, "#ff8800")}
+                @input=${(e: Event) => at(i, { color: (e.target as HTMLInputElement).value }, true)}
+              />
+              <input
+                type="text"
+                class="palette-color"
+                placeholder="#ff8800"
+                .value=${p.color ?? ""}
+                @change=${(e: Event) =>
+                  this._recolorPaletteColor(i, e.target as HTMLInputElement)}
+              />
+              <button
+                class="rule-remove"
+                aria-label="Remove color"
+                title="Remove this color; anything using it keeps the color it has now"
+                @click=${() => this._removePaletteColor(i)}
+              >
+                <ha-icon icon="mdi:close"></ha-icon>
+              </button>
+            </div>
+          `
+        )}
+        ${this._paletteError ? html`<div class="symbol-error">${this._paletteError}</div>` : nothing}
+        ${list.length >= MAX_PALETTE
+          ? nothing
+          : html`<div class="row wide state-color-add">
+              <button
+                @click=${() => {
+                  this._paletteError = "";
+                  commit([...list, { name: this._nextPaletteName(list), color: "#ff8800" }]);
+                }}
+              >
+                <ha-icon icon="mdi:plus"></ha-icon>Add color
+              </button>
+            </div>`}
+      </div>
+    `;
+  }
+
+  /** "Color 1", "Color 2", … — the first number no entry is already using. */
+  private _nextPaletteName(list: readonly PaletteColor[]): string {
+    const taken = new Set(list.map((p) => paletteSlug(p.name)));
+    for (let n = 1; ; n++) {
+      const name = `Color ${n}`;
+      if (!taken.has(paletteSlug(name))) return name;
+    }
+  }
+
+  /**
+   * Takes the input rather than its value so a refused rename can put the old
+   * name back. Lit will not do it: the config is unchanged, so the binding sees
+   * the same value it last wrote and skips the DOM, leaving the box showing a
+   * name the plan does not have.
+   */
+  private _renamePaletteColor(i: number, input: HTMLInputElement): void {
+    const list = this._config.palette ?? [];
+    const entry = list[i];
+    if (!entry) return;
+    // Trimmed before anything else reads it. `paletteSlug` trims, so " Warm "
+    // and "Warm" are the same colour and nothing would be rewritten — but the
+    // untrimmed spelling would still be stored, and `paletteEntries` trims for
+    // display, so the palette panel would show a label none of the dropdowns do.
+    const name = input.value.trim();
+    const from = paletteSlug(entry.name);
+    const to = paletteSlug(name);
+    if (from === to) {
+      // Same colour, different spelling ("Warm" → "warm"). Nothing to rewrite.
+      this._paletteError = "";
+      if (name === (entry.name ?? "")) {
+        // Only surrounding whitespace changed, so the config will not, and Lit
+        // has no reason to re-render the field just typed into. Put it back, the
+        // same way a refused rename does.
+        input.value = name;
+        return;
+      }
+      this._patchConfig({ palette: list.map((p, j) => (j === i ? { ...p, name } : p)) });
+      return;
+    }
+    if (to && list.some((p, j) => j !== i && paletteSlug(p.name) === to)) {
+      // Two entries with one slug means one of them stops resolving, and which
+      // one is an accident of ordering. Refuse rather than silently pick.
+      this._paletteError = `Another color is already called “${name}”.`;
+      input.value = entry.name ?? "";
+      return;
+    }
+    this._paletteError = "";
+    const renamed = list.map((p, j) => (j === i ? { ...p, name } : p));
+    const config = { ...this._config, palette: renamed };
+    this._patchConfig(
+      // Same shadowing caveat as delete: if another entry still declares the old
+      // slug, its references are none of this rename's business.
+      this._slugStillResolves(from, config)
+        ? config
+        : // An empty new name leaves the entry unusable, so its references have
+          // nothing to point at — freeze them at the colour, as a delete does.
+          rewritePaletteRefs(config, from, to ? paletteRef(name) : entry.color)
+    );
+  }
+
+  /**
+   * The colour half of a palette row.
+   *
+   * Guarded like the name half, and for the same reason. An empty or invalid
+   * colour drops the entry from `paletteEntries`, so `paletteStyle` stops
+   * declaring its property and every reference to it dangles — which is not a
+   * fallback, it is black. That is the same damage deleting the entry does, but
+   * reached without a rewrite, without an error, and with the row still sitting
+   * there looking live. Refuse it and put the field back instead; the way out
+   * is the remove button, which freezes the references properly.
+   */
+  private _recolorPaletteColor(i: number, input: HTMLInputElement): void {
+    const list = this._config.palette ?? [];
+    const entry = list[i];
+    if (!entry) return;
+    const color = input.value.trim();
+    if (!cssColor(color)) {
+      this._paletteError = color
+        ? `“${color}” is not a color the card can use.`
+        : "A named color needs a color. Use the remove button to take the name away.";
+      input.value = entry.color ?? "";
+      return;
+    }
+    this._paletteError = "";
+    this._patchConfig({ palette: list.map((p, j) => (j === i ? { ...p, color } : p)) });
+  }
+
+  private _removePaletteColor(i: number): void {
+    const list = this._config.palette ?? [];
+    const entry = list[i];
+    if (!entry) return;
+    this._paletteError = "";
+    const next = list.filter((_, j) => j !== i);
+    const config = { ...this._config, palette: next.length ? next : undefined };
+    // Only freeze the references if the name they point at is actually gone.
+    // Two entries may share a slug — `paletteEntries` keeps the first and
+    // shadows the rest — so deleting the shadowed one leaves the property still
+    // declared by its twin. Rewriting then, references that belong to the
+    // survivor would be frozen at the *deleted* entry's colour: the plan
+    // repaints wrong and a live link is cut, with nothing said about it.
+    this._patchConfig(
+      this._slugStillResolves(paletteSlug(entry.name), config)
+        ? config
+        : rewritePaletteRefs(config, paletteSlug(entry.name), entry.color)
+    );
+  }
+
+  /** Whether a slug is still declared by the palette in `config`. */
+  private _slugStillResolves(slug: string, config: FloorplanCardConfig): boolean {
+    if (!slug) return false;
+    return paletteEntries(config.palette).some((p) => paletteSlug(p.name) === slug);
+  }
+
+  /**
+   * Says where the switcher is and offers the way back (issue #281).
+   *
+   * Placing is a drag on the canvas, so this is not a second way to set the
+   * position — it is the half a drag cannot express: returning to the corner.
+   * Without it, dropping the switcher once would be irreversible except by
+   * hand-editing YAML.
+   */
+  private _renderSwitcherPlacement(): TemplateResult {
+    const at = floorSwitcherAnchor(this._config);
+    const floors = this._config.floors ?? [];
+    const w = cssNumber(this._config.width, DEFAULT_WIDTH);
+    const h = cssNumber(this._config.height, DEFAULT_HEIGHT);
+    return html`
+      <div class="row col">
+        <label>Position</label>
+        ${floors.length > 1
+          ? html`<span class="hint"
+                >${at
+                  ? "Drag it on the canvas, or type the point here."
+                  : "In the plan's top-right corner. Drag it on the canvas, or type a point here."}</span
+              >
+              <!-- Coordinates as well as the drag, because the drag is the only
+                   way to place it and a pointer is not the only way people
+                   work: the handle takes no keyboard, so without these there
+                   would be no keyboard path to the feature at all. They are
+                   also the precise option, for a plan being nudged a few units
+                   rather than aimed by eye. -->
+              <div class="row wide">
+                <!-- The visible <label>s are siblings rather than wrappers, so
+                     they name nothing as far as assistive tech is concerned:
+                     a screen reader would announce two unlabelled spinbuttons
+                     and leave you to guess which is which. The aria-label is
+                     what carries the name, and says the unit as well, since
+                     "X" alone does not tell you these are canvas units. -->
+                <label aria-hidden="true">X</label>
+                <!-- The exact stored number, not a rounded one. With Snap off
+                     (or a hand-written config) an anchor is legitimately
+                     fractional, and a field that showed 12 for a stored 12.4
+                     would be lying about where the switcher is — then rewrite
+                     it to 13 the moment anyone touched the spinner. These are
+                     meant to be the precise way to place it. Hence step="any"
+                     as well: a number input defaults to whole steps, which
+                     marks a stored 60.4 invalid and lets the spinner snap it. -->
+                <input
+                  type="number"
+                  step="any"
+                  aria-label="Floor switcher X, in canvas units"
+                  .value=${at ? String(at.x) : ""}
+                  placeholder=${Math.round(switcherHandleHome(w, h).x)}
+                  @change=${(e: Event) => this._setSwitcherCoord("x", (e.target as HTMLInputElement).value)}
+                />
+                <label aria-hidden="true">Y</label>
+                <input
+                  type="number"
+                  step="any"
+                  aria-label="Floor switcher Y, in canvas units"
+                  .value=${at ? String(at.y) : ""}
+                  placeholder=${Math.round(switcherHandleHome(w, h).y)}
+                  @change=${(e: Event) => this._setSwitcherCoord("y", (e.target as HTMLInputElement).value)}
+                />
+              </div>
+              ${at
+                ? html`<div class="row wide">
+                    <button @click=${() => this._patchConfig({ floorSwitcher: undefined })}>
+                      Back to the corner
+                    </button>
+                  </div>`
+                : nothing}`
+          : html`<span class="hint"
+              >A plan with one floor draws no switcher. Add a second floor and it appears
+              here.</span
+            >`}
+      </div>
+    `;
+  }
+
+  /**
+   * Set one coordinate from the panel's number fields.
+   *
+   * Typing into one of them while the switcher is still in its default corner
+   * has to place it, which means inventing the other half — and the only
+   * honest answer is where the handle is actually drawn, since that is what
+   * the field's placeholder has been showing.
+   *
+   * An emptied field returns the switcher to the corner rather than storing a
+   * half-position: `floorSwitcher` is a point or it is nothing, which is the
+   * rule `floorSwitcherAnchor` enforces at the other end.
+   */
+  private _setSwitcherCoord(axis: "x" | "y", raw: string): void {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) {
+      this._patchConfig({ floorSwitcher: undefined });
+      return;
+    }
+    const w = cssNumber(this._config.width, DEFAULT_WIDTH);
+    const h = cssNumber(this._config.height, DEFAULT_HEIGHT);
+    const base = floorSwitcherAnchor(this._config) ?? switcherHandleHome(w, h);
+    this._patchConfig({
+      floorSwitcher: { ...base, [axis]: n },
+    });
+  }
+
   private _renderSymbolsPanel(): TemplateResult {
     const own = Object.keys(this._config.symbols ?? {});
     return html`
@@ -4686,14 +5465,24 @@ export class FloorplanCardEditor extends LitElement {
                 title,
                 names,
                 o.entity
-                  ? this._renderColorRow({
-                      label: "Active color",
+                  ? html`${this._renderColorRow({
+                      label: "Open color",
+                      title: "Leaf, sash and swing arc while this opening is open",
                       value: o.activeColor,
                       swatch: "#03a9f4",
                       placeholder: "(primary)",
                       onLive: (activeColor) => this._updateOpeningLive(o.id, { activeColor }),
                       onCommit: (activeColor) => this._updateOpening(o.id, { activeColor }),
-                    })
+                    })}
+                    ${this._renderColorRow({
+                      label: "Closed color",
+                      title: "Leaf, sash and swing arc while it is closed — the jambs stay the wall's color",
+                      value: o.inactiveColor,
+                      swatch: "#c62828",
+                      placeholder: "(wall)",
+                      onLive: (inactiveColor) => this._updateOpeningLive(o.id, { inactiveColor }),
+                      onCommit: (inactiveColor) => this._updateOpening(o.id, { inactiveColor }),
+                    })}`
                   : nothing
               )
             : title === "Shutter"
@@ -4768,8 +5557,20 @@ export class FloorplanCardEditor extends LitElement {
           this._renderItemReadings(it)
         )}
         ${itemHasLabel(it)
-          ? // Nothing to place or size while the device draws no label at all.
-            this._renderGroup("Label", this._renderForm(itemLabelForm(it), apply))
+          ? this._renderGroup(
+              "Label",
+              this._renderForm(itemLabelForm(it), apply),
+              it.disableLabelColor && it.useCustomLabelColor
+                ? this._renderColorRow({
+                    label: "Custom color",
+                    value: it.labelCustomColor,
+                    swatch: "#ffffff",
+                    placeholder: "e.g. #ff0000 or red",
+                    onLive: (labelCustomColor) => this._updateItemLive(it.id, { labelCustomColor }),
+                    onCommit: (labelCustomColor) => this._updateItem(it.id, { labelCustomColor }),
+                  })
+                : nothing
+            )
           : nothing}
         ${this._renderGroup(
           "Badge",
@@ -4783,9 +5584,9 @@ export class FloorplanCardEditor extends LitElement {
               // both invites setting one and seeing the other. Say which one is
               // in charge instead of leaving a dead control on screen.
               html`<p class="hint rule-note">
-                Colored by the state rules below — they replace the active color.
+                Colored by the state rules below — they replace the active and inactive colors.
               </p>`
-            : this._renderColorRow({
+            : html`${this._renderColorRow({
                 label: "Active color",
                 title: "Badge color while this device is on (issue #79)",
                 value: it.activeColor,
@@ -4793,7 +5594,17 @@ export class FloorplanCardEditor extends LitElement {
                 placeholder: "(theme)",
                 onLive: (activeColor) => this._updateItemLive(it.id, { activeColor }),
                 onCommit: (activeColor) => this._updateItem(it.id, { activeColor }),
-              }),
+              })}
+              ${this._renderColorRow({
+                label: "Inactive color",
+                title:
+                  "Badge color while this device is off — closed, locked or docked, whichever this entity says (issue #228)",
+                value: it.inactiveColor,
+                swatch: "#c62828",
+                placeholder: "(theme)",
+                onLive: (inactiveColor) => this._updateItemLive(it.id, { inactiveColor }),
+                onCommit: (inactiveColor) => this._updateItem(it.id, { inactiveColor }),
+              })}`,
           this._renderStateColorRules(
             it.stateColor,
             (stateColor) => this._updateItem(it.id, { stateColor }),
@@ -5497,6 +6308,10 @@ export class FloorplanCardEditor extends LitElement {
        leaving a fringe that runs through every opening (#203). */
     .fp-wall-neon {
       filter: var(--fp-skin-wall-filter, none);
+    }
+    /* Thin, as the card draws a railing (issue #182) — see the card's rule. */
+    line.wall.railing {
+      stroke-width: calc(var(--fp-skin-wall-width, 8) * 0.4);
     }
     line.wall.selected {
       stroke: var(--primary-color, #03a9f4);
@@ -6713,6 +7528,81 @@ export class FloorplanCardEditor extends LitElement {
       border-color: var(--fp-active, var(--fp-skin-active, var(--state-light-active-color, var(--state-active-color, #fdd835))));
       color: var(--fp-ink, var(--fp-skin-active-ink, var(--text-primary-color, #212121)));
     }
+    /* The off colour, previewed as the card paints it (issue #228). Below
+       .active-colored and .state-colored in the same order the card uses. */
+    .edit-item .badge.inactive-colored {
+      background: var(--fp-inactive);
+      border-color: var(--fp-inactive);
+      color: var(--fp-ink, var(--text-primary-color, #212121));
+    }
+    /* The floor switcher's drag handle (issue #281). Drawn as the switcher it
+       stands for rather than as a generic grip, so what you drag looks like
+       what you are placing — and centred on its anchor, which is what makes
+       the drop land where the pointer is. */
+    .switcher-handle {
+      position: absolute;
+      /* The overlay it sits in is pointer-events:none so clicks reach the
+         canvas underneath; anything in there that is meant to be grabbed has
+         to turn them back on for itself. Without this the handle drew
+         perfectly and could not be picked up at all. */
+      pointer-events: auto;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      cursor: grab;
+      touch-action: none;
+      z-index: 4;
+    }
+    /* Only the Select tool moves the switcher, so under a drawing tool the
+       handle is just in the way: it sits above the canvas and would swallow a
+       wall, door or area gesture started beneath it, since its own pointerdown
+       handler ignores every tool but Select. It stays visible, as the footprint
+       the card's buttons will cover, and lets the pointer through. */
+    .switcher-handle.passive {
+      pointer-events: none;
+      cursor: default;
+    }
+    .switcher-handle.dragging {
+      cursor: grabbing;
+    }
+    /* Compact chrome lays the card's buttons across a row rather than down a
+       column (issue #152), and the handle has to agree: its whole job is to
+       show the footprint the block will have, and a column standing in for a
+       row can sit happily in a gap the real thing overflows. Wrapped and
+       centred for the same reason the card's is wrapped — eight floors is
+       exactly the case a row is worst at. */
+    .switcher-handle.row {
+      flex-direction: row;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 50%;
+    }
+    /* Dimmed until it has been placed, so the canvas does not claim a position
+       is stored when none is. Its tooltip says the same thing in words. */
+    .switcher-handle.default {
+      opacity: 0.55;
+    }
+    .switcher-handle .sh-btn {
+      border: 1px solid var(--divider-color, #ccc);
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color);
+      border-radius: 6px;
+      padding: 3px 7px;
+      font-size: 11px;
+      line-height: 1;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+      max-width: 110px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .switcher-handle .sh-btn.active {
+      background: var(--primary-color, #03a9f4);
+      color: var(--text-primary-color, #fff);
+      border-color: var(--primary-color, #03a9f4);
+    }
     .state-color-rule select {
       flex: 0 0 96px;
     }
@@ -6739,6 +7629,29 @@ export class FloorplanCardEditor extends LitElement {
       flex: 1 1 100%;
       min-width: 0;
     }
+    /* Named colours (issue #265). The dropdown is the narrowest control in
+       the row and never grows: it holds short names, and the swatch beside it
+       is what you actually read the colour off. It is absent entirely on a
+       plan with no palette, so these rules cost an unpalettised editor
+       nothing. */
+    .row select.palette-pick {
+      flex: 0 1 96px;
+      min-width: 0;
+    }
+    .palette-panel {
+      gap: 6px;
+    }
+    /* The name leads — it is what the dropdowns elsewhere will show — and the
+       colour text box gives up width first, exactly as a state rule's does. */
+    .row.palette-row input.palette-name {
+      flex: 1 1 90px;
+      min-width: 60px;
+    }
+    .row.palette-row input.palette-color {
+      flex: 1 1 60px;
+      min-width: 60px;
+    }
+    .palette-row .rule-remove,
     .state-color-rule .rule-remove,
     .state-color-add button {
       display: inline-flex;

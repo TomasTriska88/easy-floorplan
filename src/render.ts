@@ -26,6 +26,7 @@ import type {
   Area,
   AreaPoint,
   Wall,
+  WallKind,
   RenderHass,
   HassEntity,
   FloorItem,
@@ -63,7 +64,7 @@ import {
   DEFAULT_RIPPLE_WIDTH,
 } from "./types";
 import { cssColor, cssColorOr, cssNumber, cssIdent, cssEntityId, cssIcon } from "./css-safe";
-import { hasAction } from "./actions";
+import { actionTargetEntity, hasAction } from "./actions";
 import { SKIN_ACCENT, SKIN_PAPER, SKIN_WALL, MAX_SKIN_WALL_WIDTH } from "./skins";
 // The same tolerance #141 uses to decide an opening sits on a wall, so "this
 // door is in this wall" means one thing across the card.
@@ -114,10 +115,40 @@ export function hassRenderInputsChanged(
   watchedEntities: Iterable<string>,
 ): boolean {
   if (prev.formatEntityState !== next.formatEntityState) return true;
+  // Both formatters, because a plan can be built entirely out of attribute
+  // readings and would otherwise be watching a function it never calls.
+  if (prev.formatEntityAttributeValue !== next.formatEntityAttributeValue) return true;
   for (const id of watchedEntities) {
     if (prev.states[id] !== next.states[id]) return true;
   }
   return false;
+}
+
+/**
+ * Entities that appear in an accessible name but never in the drawing.
+ *
+ * A furniture action can name its own target, and `furnitureAccessibleName`
+ * reads that entity's friendly name to label the button. Nothing about it is
+ * drawn, so it has no business in `collectWatchedEntities`: that set is what
+ * `buildRenderHass` exposes, and a replay would start fetching history for an
+ * entity the plan never shows. But a card that never re-renders when it
+ * changes would go on announcing the name it first saw — or the raw entity id
+ * it fell back to while the entity did not exist yet.
+ *
+ * So: watched for the purpose of *updating*, absent from what gets *drawn*.
+ */
+export function collectNamedEntities(c: FloorplanCardConfig): Set<string> {
+  const ids = new Set<string>();
+  for (const f of getFloors(c)) {
+    for (const piece of f.furniture ?? []) {
+      for (const g of ["tap", "hold", "double_tap"] as const) {
+        const p = furnitureActionForGesture(piece, g);
+        const id = p && actionTargetEntity({ entity: p.entity }, p.config);
+        if (id) ids.add(id);
+      }
+    }
+  }
+  return ids;
 }
 
 /** Every entity id whose state can change what a plan draws (all floors). */
@@ -132,11 +163,12 @@ export function collectWatchedEntities(c: FloorplanCardConfig): Set<string> {
   // attribute moves, so identity comparison in hassRenderInputsChanged
   // catches it.
   //
-  // Sun dimming (#113) reads the elevation. Sunlight reads both halves — the
-  // azimuth for the direction, the elevation for whether there is any light —
-  // but only while it follows the real sun: a pinned sunBearing reads neither
-  // (see sunBearingOf and sunlightStrengthOf), so it needs no subscription.
-  if (c.sunDimming || (c.sunlight && !sunIsPinned(c))) ids.add("sun.sun");
+  // Sun dimming (#113) and ambient daylight read the elevation. Sunlight reads
+  // both halves — the azimuth for the direction, the elevation for whether
+  // there is any light — but only while it follows the real sun: a pinned
+  // sunBearing reads neither (see sunBearingOf and sunlightStrengthOf), so it
+  // needs no subscription.
+  if (c.sunDimming || c.ambientDaylight || (c.sunlight && !sunIsPinned(c))) ids.add("sun.sun");
   for (const f of getFloors(c)) {
     for (const o of f.openings) {
       if (o.entity) ids.add(o.entity);
@@ -201,8 +233,7 @@ export function entityAttributeText(
   if (!entityId || !hass) return NO_STATE;
   const stateObj = hass.states[entityId];
   if (!stateObj) return NO_STATE;
-  const fmt = (hass as { formatEntityAttributeValue?: (s: unknown, a: string) => string })
-    .formatEntityAttributeValue;
+  const fmt = hass.formatEntityAttributeValue;
   if (typeof fmt === "function") return fmt(stateObj, attribute);
   const raw = (stateObj.attributes as Record<string, unknown>)?.[attribute];
   return raw === undefined || raw === null || raw === "" ? NO_STATE : String(raw);
@@ -689,6 +720,10 @@ export function openingClearFraction(o: Opening, amount: number, secondAmount?: 
   // the identity for every opening that has always filled its frame.
   if (openingMotion(o) === "swing")
     return openingSash(o) === "double" ? (a1 + a2) / 2 : a1 * openingSashSpan(o);
+  // A top-hinged sash leaves the plan rather than sweeping across it (issue
+  // #272), so nothing of it is left in the gap: open it and the whole width is
+  // clear. One leaf, so `secondAmount` has nothing to average with.
+  if (openingMotion(o) === "awning") return a1;
   switch (sliderStyleOf(o)) {
     case "biparting":
       // Each leaf recesses into its own wall, so between them they can clear
@@ -706,22 +741,13 @@ export function openingClearFraction(o: Opening, amount: number, secondAmount?: 
 
 /**
  * How much of an opening's gap a lamp's cast pool passes through — the same
- * question {@link openingClearFraction} answers, except glass admits its
- * whole gap however its sash is sitting, the same rule {@link
- * openingSunFraction} already applies to sunlight and by the same field:
- * {@link openingIsGlazed}. `glazed` means one thing — is this opening glass —
- * and a lamp's light passing through glass same as sunlight does is that one
- * fact read twice, not two different rules that happen to agree.
+ * question {@link openingClearFraction} answers, except that clear glass
+ * admits its whole gap however its sash is sitting.
  *
- * One exception sunlight doesn't need: a **roll-motion** window is a blind,
- * shutter, shade, curtain or awning bound as the opening's own entity (an
- * auto-detected `device_class`, see {@link openingFromDeviceClass}) — a
- * covering standing in for the glass behind it, not the glass itself. Glazed
- * by the same default every window gets, it would read as always-clear no
- * matter how far down it actually is, defeating the one thing binding it was
- * for. So it keeps {@link openingClearFraction}'s answer regardless of
- * `glazed` — the roll-up rule {@link openingClearFraction}'s own docs
- * describe, honoured here too.
+ * Which openings count as clear glass is {@link openingGlassIsClear}, the one
+ * rule sunlight reads too ({@link openingSunFraction}) — including its
+ * roll-motion exception, which sunlight was missing until that helper existed.
+ * Read its docs for the rule and for the blind/shade/curtain gap it leaves.
  *
  * A shutter — the separate `shutterEntity` layered over an opening — overrides
  * the glass, same priority {@link openingSunFraction} gives it: rolled down,
@@ -741,7 +767,7 @@ export function glowClearFraction(
   shutter?: number,
 ): number {
   if (shutter !== undefined && shutter <= 0) return 0;
-  if (openingIsGlazed(o) && openingMotion(o) !== "roll") return 1;
+  if (openingGlassIsClear(o)) return 1;
   return openingClearFraction(o, amount, secondAmount);
 }
 
@@ -761,7 +787,7 @@ export function glowClearSpan(
   shutter?: number,
 ): [number, number] {
   if (shutter !== undefined && shutter <= 0) return [0, 0];
-  if (openingIsGlazed(o) && openingMotion(o) !== "roll") return [0, 1];
+  if (openingGlassIsClear(o)) return [0, 1];
   return openingClearSpan(o, amount, secondAmount);
 }
 
@@ -1214,6 +1240,39 @@ export function itemHiddenWhenInactive(
   return !entityIsActive(item.entity, state);
 }
 
+/**
+ * Whether a device asked to appear only inside its own room, and the plan is
+ * not in that room right now (issue #222, item 1).
+ *
+ * A dense plan cannot show every minor sensor at full zoom without becoming
+ * unreadable, and the room zoom is already the gesture that says "I care about
+ * this room". So this is not a second hiding mechanism so much as a place to
+ * put the ones that only make sense up close: they drop out of the overview and
+ * come back when the room is tapped.
+ *
+ * Which room a device is in is answered geometrically, from the polygon the
+ * plan already draws — a device sitting inside the room *is* in the room, with
+ * nothing to keep in step when either one moves. `area` overrides that, by the
+ * room's id or its name, for the sensor that belongs to a room but is not drawn
+ * inside it: a doorbell on the porch, a thermostat out in the hall.
+ *
+ * A device with the flag set and no room to be in — no `area`, and not inside
+ * any polygon — never appears on the card. That is the honest reading of what
+ * it asked for, and the editor still draws it, so it stays findable and
+ * fixable rather than becoming furniture the user cannot get back.
+ */
+export function itemHiddenUntilZoomed(
+  item: Pick<FloorItem, "showOnlyWhenZoomed" | "area" | "x" | "y">,
+  zoomedArea: Area | undefined
+): boolean {
+  if (!item.showOnlyWhenZoomed) return false;
+  if (!zoomedArea) return true;
+  // Named room wins over geometry: it is the explicit answer, and it is the
+  // only one available for a device drawn outside every polygon.
+  if (item.area) return item.area !== zoomedArea.id && item.area !== zoomedArea.name;
+  return !pointInPolygon(zoomedArea.points ?? [], item.x, item.y);
+}
+
 export function itemBadgeHidden(
   item: Partial<FloorItem>,
   state: string | undefined,
@@ -1466,6 +1525,18 @@ export function editorItemLabel(
 export function itemLabelSize(v: unknown): number {
   return Math.min(40, Math.max(8, cssNumber(v, DEFAULT_LABEL_SIZE)));
 }
+/**
+ * Resolves the label color for an item, respecting disableLabelColor,
+ * useCustomLabelColor, and any custom color set.
+ */
+export function itemLabelColor(
+  item: { disableLabelColor?: boolean; useCustomLabelColor?: boolean; labelCustomColor?: string },
+  stateColor: string | undefined
+): string | undefined {
+  if (!item.disableLabelColor) return stateColor;
+  if (!item.useCustomLabelColor) return undefined;
+  return cssColor(item.labelCustomColor) ?? undefined;
+}
 
 /** Clamp a config area `labelSize` to the same 8–40 range item labels use. */
 export function areaLabelSize(v: unknown): number {
@@ -1496,8 +1567,46 @@ export function wallThickness(v: unknown): number {
  * untouched wall keeps following the skin and an explicit thickness
  * overrides it.
  */
-export function wallStrokeStyle(thickness: unknown): string {
-  return thickness === undefined ? "" : `stroke-width:${wallThickness(thickness)};`;
+export function wallStrokeStyle(thickness: unknown, kind?: WallKind): string {
+  if (thickness === undefined) return "";
+  const weight = wallThickness(thickness);
+  return kind === "railing"
+    ? `stroke-width:${Math.round(weight * RAILING_WEIGHT * 100) / 100};`
+    : `stroke-width:${weight};`;
+}
+
+/**
+ * A railing's stroke as a share of the wall weight it would otherwise have
+ * (issue #182) — thin enough to read as a barrier rather than structure next
+ * to the walls around it. The card's and the editor's `.wall.railing` rule
+ * applies the same share to a skin's weight.
+ */
+export const RAILING_WEIGHT = 0.4;
+
+/** Whether a wall is a railing rather than a full-height wall (issue #182). */
+export function isRailing(w: Pick<Wall, "kind">): boolean {
+  return w.kind === "railing";
+}
+
+const blockingWallsMemo = new WeakMap<readonly Wall[], Wall[]>();
+
+/**
+ * The walls that stand in the way of light and seal off space: all of them but
+ * the railings (issue #182).
+ *
+ * Hands back the **same array** when there are no railings, and the same
+ * filtered array for the same input after that. Both matter: the dead-space
+ * cache and `wallsLightPassesThrough`'s callers key on array identity, and this
+ * runs on every state change the card takes.
+ */
+export function wallsThatBlock(walls: readonly Wall[]): Wall[] {
+  if (!walls.some(isRailing)) return walls as Wall[];
+  let hit = blockingWallsMemo.get(walls);
+  if (!hit) {
+    hit = walls.filter((w) => !isRailing(w));
+    blockingWallsMemo.set(walls, hit);
+  }
+  return hit;
 }
 
 // ---- overlay scaling --------------------------------------------------------
@@ -2416,9 +2525,10 @@ export function kindFromEntity(entity: string): ItemKind {
 /**
  * How an opening moves — `swing` (hinged door / casement window), `slide`
  * (panels travelling along the wall), `roll` (a curtain leaving the floor
- * plane) or `fixed` (issue #218: it does not). Defaults to `swing`.
+ * plane), `fixed` (issue #218: it does not) or `awning` (issue #272: hinged at
+ * the head, swung out at the sill). Defaults to `swing`.
  */
-export function openingMotion(o: Opening): "swing" | "slide" | "roll" | "fixed" {
+export function openingMotion(o: Pick<Opening, "motion">): "swing" | "slide" | "roll" | "fixed" | "awning" {
   return o.motion ?? "swing";
 }
 
@@ -2746,6 +2856,93 @@ export function areaActionForGesture(
 }
 
 /**
+ * What a gesture on a piece of furniture should do (issue #284), or
+ * `undefined` for "whatever it did before actions existed".
+ *
+ * The mirror of {@link areaActionForGesture}, and deliberately so: a room's tap
+ * falls back to its zoom, a piece's falls back to its {@link
+ * Furniture.goToFloor}. Returning `undefined` rather than synthesising the
+ * fallback keeps that decision with the caller, which is the only place that
+ * knows whether a floor in that direction actually exists.
+ */
+export function furnitureActionForGesture(
+  f: Pick<Furniture, "entity" | "tap_action" | "hold_action" | "double_tap_action">,
+  gesture: "tap" | "hold" | "double_tap",
+): { entity?: string; config: ActionConfig } | undefined {
+  const configured =
+    gesture === "tap" ? f.tap_action : gesture === "hold" ? f.hold_action : f.double_tap_action;
+  if (!configured) return undefined;
+  return { entity: configured.entity ?? f.entity, config: configured };
+}
+
+/**
+ * What to call a piece of furniture out loud.
+ *
+ * A piece that answers gestures is a button, and `renderFurniture` contributes
+ * paths and nothing else — so unless the floor-change tooltip happens to be
+ * naming it, a screen reader is handed a button with no name at all.
+ *
+ * The entity the gesture will actually act on is the most useful thing to call
+ * it — which is the action's own `entity` where it names one, not the piece's:
+ * a shelf drawn as a plain box whose `tap_action` points at the light on it is
+ * "Shelf light", and calling it "box" would name the drawing instead of the
+ * thing the button does. Failing that the symbol it is drawn as, because that
+ * is what everyone else is looking at. Ids are hyphenated (`double-bed`),
+ * which is not how anything should be read aloud.
+ *
+ * Gestures can disagree about their target, and then there is no right answer,
+ * only a predictable one: tap, then hold, then double-tap — named after the
+ * gesture people reach for first. Only gestures that could actually run are
+ * considered, and only the kinds that act on an entity: an unusable
+ * `more-info` with nothing to show must not win over a working hold, and a
+ * `navigate` acts on a path rather than on anything nameable.
+ *
+ * The piece's own `entity` is still the fallback, whatever its gestures do. It
+ * is what the drawing is bound to — the plant's soil sensor, the shelf's light
+ * — so it names the *thing*, which is the right answer for a button whose
+ * action has no subject of its own.
+ *
+ * Failing both, the symbol — by the name its own definition carries, not by
+ * its id. The ids are written for configs, not for reading aloud
+ * (`cornerShowerCurved`), and the catalogue already holds the words for them
+ * ("curved corner shower"), user-contributed symbols included. Only an id
+ * nothing in the catalogue answers to falls back to unpicking the id itself.
+ */
+export function furnitureAccessibleName(
+  f: Pick<Furniture, "type" | "entity" | "tap_action" | "hold_action" | "double_tap_action">,
+  hass?: RenderHass,
+  catalog: SymbolCatalog = BUILTIN_SYMBOLS,
+): string {
+  const target =
+    (["tap", "hold", "double_tap"] as const)
+      .map((g) => furnitureActionForGesture(f, g))
+      .map((p) => (p ? actionTargetEntity({ entity: p.entity }, p.config) : undefined))
+      .find((e) => e) ?? f.entity;
+  const friendly = target
+    ? (hass?.states[target]?.attributes?.friendly_name as string | undefined)
+    : undefined;
+  return (
+    friendly || target || findSymbol(catalog, f.type)?.name || humanSymbolId(f.type) || "Furniture"
+  );
+}
+
+/**
+ * An unknown symbol id, said as close to English as an id can be got.
+ *
+ * Only for a `type` the catalogue has no definition for — a symbol from a
+ * config that has since been removed, or a typo. Separators become spaces and
+ * camelCase is split at the hump, because `fishTank` read out verbatim is not
+ * a name.
+ */
+function humanSymbolId(type: unknown): string {
+  return String(type ?? "")
+    .replace(/[-_]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .trim();
+}
+
+/**
  * Whether a room does anything a plain zoom would not — i.e. whether any of
  * its three gestures is configured.
  *
@@ -3050,22 +3247,35 @@ export function shutterMarkPoint(
 }
 
 /**
- * Whether an opening earns a shutter badge: both entities bound, and not
- * switched off (issue #74 follow-up).
+ * Whether an opening's shutter badge is shown when nobody has said: on with
+ * both entities bound, off with the shutter alone (issue #293).
  *
- * The badge exists because the second entity is otherwise invisible — the plan
- * draws the shutter, but nothing says the symbol answers to two different
- * things, so press-and-hold is a gesture you would have to already know about
- * to find. With one entity bound there is no second thing to reveal.
+ * With both bound the badge exists because the second entity is otherwise
+ * invisible — the plan draws the shutter, but nothing says the symbol answers
+ * to two different things, so press-and-hold is a gesture you would have to
+ * already know about to find. A discoverability aid nobody switches on helps
+ * nobody, so it is on.
  *
- * On by default, because a discoverability aid nobody switches on helps
- * nobody. Off is for the plan where every window has a shutter and the icons
- * become the loudest thing on it; the gestures keep working either way.
+ * With the shutter alone there is no second thing to reveal, so it is opt-in,
+ * on the terms of the opening's own badge ({@link hasOpeningMark}): a raised
+ * roll-up leaves nothing on the plan but its track line. Defaulting it on here
+ * would have put an icon beside every shutter-only window on plans that never
+ * asked for one.
+ */
+export function shutterMarkDefault(o: Pick<Opening, "entity">): boolean {
+  return !!o.entity;
+}
+
+/**
+ * Whether an opening draws a shutter badge: a shutter bound, and the badge
+ * switched on — see {@link shutterMarkDefault} for what unset means (issue #74
+ * follow-up). Off is for the plan where every window has a shutter and the
+ * icons become the loudest thing on it; the gestures keep working either way.
  */
 export function hasShutterMark(
   o: Pick<Opening, "entity" | "shutterEntity" | "showShutterIcon">,
 ): boolean {
-  return !!(o.entity && o.shutterEntity) && (o.showShutterIcon ?? true);
+  return !!o.shutterEntity && (o.showShutterIcon ?? shutterMarkDefault(o));
 }
 
 /** Last-resort shutter glyphs, for an entity with no device class of its own. */
@@ -3216,6 +3426,17 @@ export interface OpeningStyle {
    */
   accent?: string;
   /**
+   * Color of the moving parts while **not** `active` (issue #228). Defaults to
+   * `color`, which is what every opening drew before this existed.
+   *
+   * Deliberately separate from `color` rather than reusing it: `color` also
+   * draws the jambs and the static frame, and those must stay the wall's colour
+   * whichever way the door is — recolouring them would turn the symbol from a
+   * hole in a wall into a coloured shape. This is the leaf, the sash, the swing
+   * arc, and a shutter that is down.
+   */
+  inactive?: string;
+  /**
    * External roller shutter layered over the opening (issue #74): how far
    * open (0..1, see {@link shutterAmount}) and whether it wears the accent.
    * Rendered as the roll curtain on top of the sash.
@@ -3263,7 +3484,12 @@ export function renderOpening(o: Opening, style: OpeningStyle): SVGTemplateResul
   const cutH = WALL_THICKNESS + 4;
   // The moving parts take the accent color when actively open (sensor-driven).
   // Sanitised: color/accent are config-supplied and land in `style="stroke/fill:…"`.
-  const tone = cssColorOr(active ? accent : color, SKIN_ACCENT);
+  // Sanitised here rather than left to `cssColorOr` below, which falls back to
+  // the *accent* — the colour this symbol wears when it is open. `inactive` is
+  // documented to default to `color`, so a value cssColor refuses has to land
+  // on the wall colour; passing it through raw drew a shut door as an open one
+  // on nothing worse than a typo.
+  const shut = cssColor(style.inactive) ?? color;
   // Fraction open (0..1) drives partial swing/slide. Defaults to the binary
   // `open` so callers that don't pass `amount` render exactly as before.
   const amt = Math.max(0, Math.min(1, style.amount ?? (open ? 1 : 0)));
@@ -3273,9 +3499,28 @@ export function renderOpening(o: Opening, style: OpeningStyle): SVGTemplateResul
   // a branch because two shapes now have two leaves — sliding panels and a
   // hinged double — and both read the same pair.
   const amt2 = style.second ? Math.max(0, Math.min(1, style.second.amount)) : amt;
-  const tone2 = style.second
-    ? cssColorOr(style.second.active ? accent : color, SKIN_ACCENT)
-    : tone;
+  /**
+   * The colour a leaf wears, from what it is *doing* rather than from what its
+   * sensor says (issue #228).
+   *
+   * `active` and "drawn shut" agree for every entity-bound opening, which is
+   * why this started life as `active ? accent : shut`. They come apart with no
+   * entity: a swing door with no sensor is drawn **open** by the static
+   * floor-plan convention ({@link openingDefaultOpen}) and is never active, so
+   * reading "not active" as "closed" painted a wide-open door in the colour
+   * that is documented to mean shut.
+   *
+   * Asking the amount instead makes the option mean what it says on all four
+   * corners: an unbound window (drawn shut) wears it, an unbound door (drawn
+   * open) does not, and a bound opening is unchanged either way. It also gets
+   * the per-leaf case right for free — a double with one sash open and one shut
+   * paints each from its own amount, which a single `active` flag could not
+   * express.
+   */
+  const leafTone = (isActive: boolean, a: number) =>
+    cssColorOr(isActive ? accent : a === 0 ? shut : color, SKIN_ACCENT);
+  const tone = leafTone(active, amt);
+  const tone2 = style.second ? leafTone(!!style.second.active, amt2) : tone;
 
   let body: SVGTemplateResult;
   if (openingMotion(o) === "swing") {
@@ -3375,6 +3620,76 @@ export function renderOpening(o: Opening, style: OpeningStyle): SVGTemplateResul
         }
         <line x1=${-half} y1="0" x2=${half} y2="0"
               stroke=${color} stroke-width=${t} />`;
+  } else if (openingMotion(o) === "awning") {
+    // Top-hinged window (issue #272): hinged at its head, swinging out at the
+    // sill. "My windows are hinged at the top and swing out at the bottom."
+    //
+    // Every other opening we draw rotates *within* the plan — a casement
+    // sweeps an arc across the floor, a slider travels along the wall. This one
+    // rotates about a horizontal axis and leaves the plan altogether, so the
+    // plan view is the sash seen edge-on: a blade projecting from the wall,
+    // narrowing as it goes because you are looking along it, with the hinge
+    // knuckles left behind on the wall line and the glass it vacated drawn as
+    // a broken line.
+    //
+    // Only `amount` drives it. `sash` and `flipH` are meaningless here (there
+    // is no hinge jamb to pick and no second leaf to hang), while `flipV` falls
+    // out of the mirror every opening already gets — which is also how you draw
+    // a bottom-hinged hopper that opens inward.
+    const hingeW = Math.min(12, o.length * 0.16);
+    const hingeH = 5;
+    // Knuckle centres, tucked just inside each jamb.
+    const hx = half - hingeW / 2 - 1;
+    // The blade spans between the knuckles, and projects with `amt`. Capped
+    // against the opening's own half-length so a wide window does not throw a
+    // blade halfway across the room.
+    const bx = Math.max(0, hx - hingeW / 2);
+    const depth = Math.min(half * 0.62, 34) * amt;
+    // Capped against the blade's own half-width. A tiny opening leaves almost
+    // no room between the knuckles — `bx` reaches 0 below about 3.5 units —
+    // and an uncapped taper then pulls the far corners past each other, so the
+    // "trapezoid" crosses itself and draws inverted. Nothing that small is
+    // legible on a plan, but the editor's Length field allows it, and a shape
+    // that folds through itself is not a drawing of anything. The cap only
+    // engages under ~4.5 units; at every size you would actually draw, the
+    // taper is well under it.
+    const taper = Math.min(depth * 0.16, bx * 0.4);
+    const openNow = amt > 0.02;
+    body = svg`
+        <!-- jambs, as any window -->
+        <line x1=${-half} y1=${-cutH / 2} x2=${-half} y2=${cutH / 2}
+              stroke=${color} stroke-width="2" />
+        <line x1=${half} y1=${-cutH / 2} x2=${half} y2=${cutH / 2}
+              stroke=${color} stroke-width="2" />
+        <!-- The glass line: solid while the sash is shut and sitting in it,
+             broken once the sash has swung out and left the gap behind. -->
+        <line x1=${-half} y1="0" x2=${half} y2="0"
+              stroke=${tone} stroke-width="1.5"
+              stroke-dasharray=${openNow ? "6 4" : nothing} />
+        ${
+          openNow
+            ? // A polyline, not a polygon, and that is the whole point of the
+              // broken line above it. A closed shape strokes its own base back
+              // along y=0 — straight over the dashes, solid — and the only
+              // glass left uncovered would be the sliver outside `bx`, which
+              // is exactly where the knuckles sit. The line would have been
+              // dashed in the markup and solid on the screen at every size.
+              svg`<polyline
+                    points="${-bx},0 ${-bx + taper},${-depth} ${bx - taper},${-depth} ${bx},0"
+                    fill="none" stroke=${tone} stroke-width="1.5"
+                    stroke-linejoin="round" />`
+            : nothing
+        }
+        <!-- Hinge knuckles, drawn whether or not it is open: they are what says
+             this window is top-hung rather than fixed when it happens to be
+             shut, and the request asked for them by name. -->
+        ${[-hx, hx].map(
+          (cx) => svg`
+          <rect x=${cx - hingeW / 2} y=${-hingeH / 2} width=${hingeW} height=${hingeH}
+                fill="none" stroke=${tone} stroke-width="1.25" />
+          <line x1=${cx} y1=${-hingeH / 2} x2=${cx} y2=${hingeH / 2}
+                stroke=${tone} stroke-width="1.25" />`
+        )}`;
   } else if (openingMotion(o) === "roll") {
     // Roll-up cover — garage door, roller shutter (issues #45 / #47). Unlike a
     // slider nothing travels along the wall: the curtain leaves the floor
@@ -3525,21 +3840,19 @@ export function renderOpening(o: Opening, style: OpeningStyle): SVGTemplateResul
   // sash so a shut shutter visibly covers an open window. Its own
   // active/accent state is independent of the window's.
   if (style.shutter) {
-    const shutterTone = cssColorOr(
-      style.shutter.active ? (style.shutter.accent ?? accent) : color,
-      SKIN_ACCENT
-    );
+    // A shutter that is down follows the opening's closed colour, the way one
+    // that is up follows its accent (issue #228).
     const shutterAmt = Math.max(0, Math.min(1, style.shutter.amount));
+    // Same rule as the leaf above, with the shutter's own accent: a shutter is
+    // "shut" when it is down, not merely when its contact is quiet.
+    const shutterLeaf = (isActive: boolean | undefined, a: number) =>
+      cssColorOr(isActive ? (style.shutter!.accent ?? accent) : a === 0 ? shut : color, SKIN_ACCENT);
+    const shutterTone = shutterLeaf(style.shutter.active, shutterAmt);
     // The hinged pair's other panel, on its own contact when it has one
     // (issue #159); without one it folds with the first, as before.
     const second = style.shutter.second;
-    const shutterTone2 = second
-      ? cssColorOr(
-          second.active ? (style.shutter.accent ?? accent) : color,
-          SKIN_ACCENT
-        )
-      : shutterTone;
     const shutterAmt2 = second ? Math.max(0, Math.min(1, second.amount)) : shutterAmt;
+    const shutterTone2 = second ? shutterLeaf(second.active, shutterAmt2) : shutterTone;
     body = svg`${body}${
       style.shutter.style === "swing"
         ? swingShutter(
@@ -3657,6 +3970,42 @@ export function subscribeOrientation(
   return () => {};
 }
 
+/**
+ * Where the floor switcher should be anchored (issue #281), or `undefined` for
+ * the top-right corner it has always used.
+ *
+ * A position is only usable if both halves are real numbers — a half-written
+ * `floorSwitcher: { x: 100 }` is not a point, and placing it at an implied 0
+ * would drop the switcher in the top-left corner with nothing saying why.
+ */
+export function floorSwitcherAnchor(
+  c: Pick<FloorplanCardConfig, "floorSwitcher">,
+): { x: number; y: number } | undefined {
+  const p = c.floorSwitcher;
+  if (!p || typeof p !== "object") return undefined;
+  const x = switcherCoord(p.x);
+  const y = switcherCoord(p.y);
+  return x === undefined || y === undefined ? undefined : { x, y };
+}
+
+/**
+ * One coordinate, or `undefined` if it is not a number anyone wrote on purpose.
+ *
+ * Checks the type before coercing, because `Number()` is far too willing:
+ * `null`, `""`, `false` and `[]` all come back as 0. YAML produces the first
+ * two for a key written with no value — `floorSwitcher: { x:, y: 100 }` — and
+ * reading that as 0 would silently park the switcher on the left edge while
+ * the guard above claimed to have rejected it. A numeric *string* is still
+ * accepted: YAML hands those over freely and they are a real number someone
+ * typed.
+ */
+function switcherCoord(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v !== "string" || v.trim() === "") return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 /** Canvas size as displayed: 90°/270° swap width and height. */
 export function rotatedCanvasSize(
   w: number,
@@ -3664,6 +4013,26 @@ export function rotatedCanvasSize(
   rot: PlanRotation
 ): { w: number; h: number } {
   return rot === 90 || rot === 270 ? { w: h, h: w } : { w, h };
+}
+
+/**
+ * Map a plan *direction* into the rotated (displayed) frame (issue #280).
+ *
+ * The overlay is HTML, so unlike the SVG it is never transformed as a whole —
+ * each anchor is remapped instead, which is what keeps badges and labels
+ * upright at any rotation. That is right for a glyph and wrong for a bearing:
+ * an angle like a motion sensor's ripple direction describes where the sensor
+ * looks *in the room*, so when the plan turns under it the angle has to turn
+ * too, or the cone points at a different wall than the one it was aimed at.
+ *
+ * Degrees clockwise from plan-north, matching how {@link rotatePlanPoint} turns
+ * the plan: at 90° the top of the plan becomes the right of the screen, so a
+ * bearing of 0 becomes 90. The result is normalised into 0..360 so callers can
+ * hand it straight to CSS.
+ */
+export function rotatePlanAngle(angle: number, rot: PlanRotation): number {
+  const a = cssNumber(angle, 0) + rot;
+  return ((a % 360) + 360) % 360;
 }
 
 /** Map a plan point into the rotated (displayed) frame. */
@@ -3769,7 +4138,7 @@ export const SUN_ELEVATION_FULL = 12;
  * blindly turns "we do not know" into a confident wrong answer, so each
  * caller gets `undefined` and applies its own fail-bright default.
  */
-function liveSunAttribute(value: unknown): number | undefined {
+export function liveSunAttribute(value: unknown): number | undefined {
   const usable = typeof value === "number" || (typeof value === "string" && value.trim() !== "");
   if (!usable) return undefined;
   const n = typeof value === "number" ? value : Number(value);
@@ -4004,10 +4373,12 @@ export function sunReachScale(elevation: unknown): number {
  * - a **shutter** that is all the way down stops everything, whatever the
  *   glass says — that is what a shutter is for, and a window behind a closed
  *   one is as dark as a wall;
- * - **glass** admits its whole gap however its sash is sitting, which is the
- *   reason this cannot reuse the lamp rule ({@link wallsLightPassesThrough}'s
- *   `openAmount`) unchanged: that one asks whether there is a *hole*, and a
- *   closed window is not a hole;
+ * - **clear glass** ({@link openingGlassIsClear}) admits its whole gap however
+ *   its sash is sitting, which is the reason this cannot reuse the lamp rule
+ *   ({@link wallsLightPassesThrough}'s `openAmount`) unchanged: that one asks
+ *   whether there is a *hole*, and a closed window is not a hole. A roller
+ *   shutter bound as the window's own entity is not clear glass, which is why
+ *   this asks that helper rather than {@link openingIsGlazed} directly;
  * - anything **opaque** admits exactly as far as it is open.
  *
  * Feed it a clear fraction rather than a raw `amount` ({@link
@@ -4015,7 +4386,7 @@ export function sunReachScale(elevation: unknown): number {
  * travel a leaf has is not the gap it clears.
  */
 export function openingSunFraction(
-  o: Pick<Opening, "type" | "glazed" | "sunlight">,
+  o: Pick<Opening, "type" | "glazed" | "sunlight" | "motion">,
   amount: number,
   /** How far the external shutter is open, or `undefined` when none is bound. */
   shutter?: number,
@@ -4025,7 +4396,7 @@ export function openingSunFraction(
   // however open, however glazed (issue #177).
   if (o.sunlight === false) return 0;
   if (shutter !== undefined && shutter <= 0) return 0;
-  if (openingIsGlazed(o)) return 1;
+  if (openingGlassIsClear(o)) return 1;
   return Math.max(0, Math.min(1, amount));
 }
 
@@ -4035,7 +4406,7 @@ export function openingSunFraction(
  * light in" is the question most callers are actually asking.
  */
 export function openingAdmitsSun(
-  o: Pick<Opening, "type" | "glazed" | "sunlight">,
+  o: Pick<Opening, "type" | "glazed" | "sunlight" | "motion">,
   amount: number,
   shutter?: number,
 ): boolean {
@@ -4050,6 +4421,41 @@ export function openingAdmitsSun(
  */
 export function openingIsGlazed(o: Pick<Opening, "type" | "glazed">): boolean {
   return o.glazed ?? o.type === "window";
+}
+
+/**
+ * Whether an opening's glass should be read as **clear whatever its sash is
+ * doing** — the one rule behind both natural and artificial light, so the two
+ * cannot drift apart.
+ *
+ * Glass admits its whole gap open or shut. That is the whole of the rule for
+ * an ordinary window or a patio door, and it is why neither {@link
+ * openingSunFraction} nor {@link glowClearFraction} can simply reuse {@link
+ * openingClearFraction}: that one asks whether there is a *hole*, and a closed
+ * window is not a hole.
+ *
+ * The exception is a **roll-motion** window. A roller shutter bound as the
+ * opening's own entity (an auto-detected `device_class`, see {@link
+ * openingFromDeviceClass}) is a covering standing in for the glass behind it,
+ * not the glass itself. Glazed by the same default every window gets, it would
+ * otherwise read as always-clear no matter how far down it actually is,
+ * defeating the one thing binding it was for.
+ *
+ * Both light paths ask this same question, because `glazed` means one thing —
+ * is this opening glass — and the sun and a lamp passing through it is that
+ * one fact read twice, not two rules that happen to agree. They diverged
+ * before this existed: a roller shutter closed over a window stopped a lamp's
+ * pool and let the midday sun straight through.
+ *
+ * **Known gap.** The covering test is `motion`, which is the only signal that
+ * survives to render time. A blind, shade or curtain defaults to `slide`
+ * rather than `roll` ({@link openingFromDeviceClass}), so a closed one still
+ * reads as clear glass to both layers. Fixing that needs a covering flag of
+ * its own on {@link Opening} rather than a motion the drawing also depends on,
+ * which is a change of its own.
+ */
+export function openingGlassIsClear(o: Pick<Opening, "type" | "glazed" | "motion">): boolean {
+  return openingIsGlazed(o) && openingMotion(o) !== "roll";
 }
 
 /** The two ends of an opening's gap, in plan coordinates. */
@@ -4485,13 +4891,51 @@ export function renderWallMask(
 /**
  * Arithmetic-mean centroid of a polygon's vertices. Not an exact
  * center-of-mass for a non-convex shape, but that precision isn't needed
- * here — it's only used for name-label placement and marquee/click
+ * here — it's only used for approximate editor positions and marquee/click
  * hit-testing (see `elementsInRect` in editor-geometry.ts).
  */
 export function polygonCentroid(points: readonly AreaPoint[]): { x: number; y: number } {
   if (!points.length) return { x: 0, y: 0 };
   const sum = points.reduce((s, p) => ({ x: s.x + p.x, y: s.y + p.y }), { x: 0, y: 0 });
   return { x: sum.x / points.length, y: sum.y / points.length };
+}
+
+/**
+ * Area-weighted centroid — the polygon's centre of *mass* by the shoelace
+ * formula — or undefined when the polygon encloses no area (fewer than three
+ * points, or all of them collinear), where the quantity is not defined.
+ *
+ * Winding does not matter: signed area appears in both the numerator and the
+ * denominator, so a clockwise polygon and its counter-clockwise twin return
+ * the same point.
+ */
+function polygonAreaCentroid(points: readonly AreaPoint[]): { x: number; y: number } | undefined {
+  if (points.length < 3) return undefined;
+  let twiceArea = 0;
+  let x = 0;
+  let y = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const pi = points[i]!;
+    const pj = points[j]!;
+    const cross = pj.x * pi.y - pi.x * pj.y;
+    twiceArea += cross;
+    x += (pj.x + pi.x) * cross;
+    y += (pj.y + pi.y) * cross;
+  }
+  if (twiceArea === 0) return undefined;
+  return { x: x / (3 * twiceArea), y: y / (3 * twiceArea) };
+}
+
+/**
+ * Centre room labels by floor area, rather than the number of vertices on each
+ * side. Keep the previous placement when the area centroid is outside a concave
+ * room or the polygon has no area. This fallback does not guarantee an interior
+ * label for every concave polygon.
+ */
+export function areaLabelPoint(points: readonly AreaPoint[]): { x: number; y: number } {
+  const centroid = polygonAreaCentroid(points);
+  if (centroid && pointInPolygon(points, centroid.x, centroid.y)) return centroid;
+  return polygonCentroid(points);
 }
 
 /** Neutral (unzoomed) result of {@link areaZoomTransform} — identity view. */

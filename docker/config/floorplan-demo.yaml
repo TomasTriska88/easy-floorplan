@@ -53,6 +53,22 @@ views:
             grid: 20
             snap: 0
             showDeadSpaces: true
+            # Named colours (issue #265). "Living" was the same #26c6da typed
+            # into the tracker and into the room it moves around in, which is
+            # the exact complaint the feature answers -- recolour the name here
+            # and both follow. Good/Warning/Bad are the plant's thresholds,
+            # named so the next sensor can reuse them instead of copying hexes.
+            palette:
+              - name: Living
+                color: "#26c6da"
+              - name: Kitchen
+                color: "#ffa726"
+              - name: Good
+                color: "#2e7d32"
+              - name: Warning
+                color: "#f9a825"
+              - name: Bad
+                color: "#c62828"
             historyReplay:
               enabled: true
               lookbackSeconds: 7200
@@ -64,6 +80,9 @@ views:
             # in configuration.yaml. If the plan looks unexpectedly dim, that is
             # this, and it is working.
             sunDimming: true
+            # Draw sunlight through openings so the roller shutter below can
+            # be checked with its cover position slider (PR #271).
+            sunlight: true
 
             # Two floors, so the card draws its switcher and issue #121 has
             # something to place. The ground floor is everything that was
@@ -95,6 +114,9 @@ views:
                     y: 100
                     length: 140
                     angle: 0
+                    # The demo cover has no shutter device_class, so state its
+                    # motion explicitly: a closed roller blocks sun and lamp glow.
+                    motion: roll
                     entity: cover.living_room_window
                   - { id: o2, type: door, x: 500, y: 500, length: 90, angle: 0 }
                   # The garage door is open/close only -- no position at all -- which
@@ -108,6 +130,18 @@ views:
                     length: 140
                     angle: 90
                     entity: cover.garage_door
+                  # Top-hinged / awning (issue #272): hinged at the head, swung
+                  # out at the sill. Shares the door contact so flipping
+                  # binary_sensor.front_door on the History view tilts it out
+                  # beside the casement below -- the two motions side by side.
+                  - id: o8
+                    type: window
+                    motion: awning
+                    x: 845
+                    y: 500
+                    length: 90
+                    angle: 0
+                    entity: binary_sensor.front_door
                   # A window whose contact is the door sensor, so there is one opening
                   # driven by a binary_sensor rather than a cover -- the two read
                   # open/closed by different rules.
@@ -118,6 +152,11 @@ views:
                     length: 120
                     angle: 0
                     entity: binary_sensor.front_door
+                    # On *and* off (issue #228): green while the sash is open,
+                    # red while it is shut. Flip binary_sensor.front_door on the
+                    # History view to watch it change.
+                    activeColor: var(--fp-color-good)
+                    inactiveColor: var(--fp-color-bad)
                   # One sensor per leaf (issue #159). All three share the same
                   # pair of contacts, so flipping "Left leaf" on the History view
                   # swings a casement sash, a door leaf and a shutter panel at
@@ -162,6 +201,18 @@ views:
                     shutterSecondaryEntity: binary_sensor.right_leaf
 
                 items:
+                  # On *and* off (issue #228). The garage door is the case the
+                  # request was about: a badge that is green when it is open and
+                  # red when it is shut, so the one you need to notice is the one
+                  # that catches your eye. `inactiveColor` reads "closed" here
+                  # without the plan naming the word -- the same key on a lock
+                  # would mean `locked`.
+                  - id: garage
+                    entity: cover.garage_door
+                    x: 900
+                    y: 240
+                    activeColor: var(--fp-color-good)
+                    inactiveColor: var(--fp-color-bad)
                   # Paired temperature/humidity: stored at two decimals, displayed at
                   # one. Should read like "17.9 °C · 49.3%".
                   # Many readings on one device (issue #180): one list, in the
@@ -320,9 +371,9 @@ views:
                     h: 60
                     entity: sensor.ficus_soil_moisture
                     stateColor:
-                      - { above: 80, color: "#2e7d32" }
-                      - { above: 65, color: "#f9a825" }
-                      - { color: "#c62828" }
+                      - { above: 80, color: var(--fp-color-good) }
+                      - { above: 65, color: var(--fp-color-warning) }
+                      - { color: var(--fp-color-bad) }
 
                 trackers:
                   # A tracker is a rectangle plus two distance sensors that map onto
@@ -335,7 +386,7 @@ views:
                     y: 120
                     w: 360
                     h: 360
-                    color: "#26c6da"
+                    color: var(--fp-color-living)
                     dotSize: 16
                     xSensor:
                       entity: sensor.tracker_distance_x
@@ -354,7 +405,7 @@ views:
                   - id: a1
                     name: Living Room
                     showName: true
-                    color: "#26c6da"
+                    color: var(--fp-color-living)
                     opacity: 0.15
                     points:
                       - { x: 100, y: 100 }
@@ -364,7 +415,7 @@ views:
                   - id: a2
                     name: Kitchen
                     showName: true
-                    color: "#ffa726"
+                    color: var(--fp-color-kitchen)
                     opacity: 0.15
                     points:
                       - { x: 500, y: 100 }

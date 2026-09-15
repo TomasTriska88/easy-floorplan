@@ -26,6 +26,7 @@ import {
   floorImageForm,
   areaForm,
   areaNameForm,
+  itemGroup7aForm,
 } from "./editor-forms";
 import { itemHasLabel } from "./render";
 import type { FormField } from "./editor-forms";
@@ -494,7 +495,7 @@ describe("itemForm", () => {
       ["name", "showName"], // 1. Identity — what it is
       ["entity", "attribute"], // 2. What it reads…
       ["showState"], //         …including whether its own state shows
-      ["labelPosition", "labelSize"], // 3. Label
+      ["labelPosition", "labelSize", "disableLabelColor"], // 3. Label
       ["badgeMode", "size", "angle"], // 4. Badge
       // 5. Colour and the readings list are hand-rolled rows, not ha-form
       //    fields, so they do not appear here — the editor slots them into
@@ -1005,6 +1006,81 @@ describe("textForm / furnitureForm / trackerForm", () => {
     expect(form.data).toMatchObject({ hand: "right", entity: "binary_sensor.x" });
   });
 
+  // Issue #284: furniture answers tap, hold and double-tap like a room does.
+  it("furniture offers all three action fields, on every piece", () => {
+    // Not gated on an entity or on `goToFloor`: a piece with neither can still
+    // navigate or call a service, and requiring one first would rule that out.
+    const form = furnitureForm({ id: "f", type: "table", x: 0, y: 0, w: 10, h: 10 } as never);
+    const names = form.fields.map((x) => x.name);
+    for (const n of ["tap_action", "hold_action", "double_tap_action"]) {
+      expect(names).toContain(n);
+      // `none` as the stated default, so the field never claims the card will
+      // do something a piece with no action configured does not do.
+      expect(form.fields.find((x) => x.name === n)!.selector).toEqual({
+        ui_action: { default_action: "none" },
+      });
+    }
+  });
+
+  it("furniture warns that a tap replaces the floor change, but only on a staircase", () => {
+    const helper = (extra: Record<string, unknown>) =>
+      furnitureForm({ id: "f", type: "stairs", x: 0, y: 0, w: 10, h: 10, ...extra } as never)
+        .fields.find((x) => x.name === "tap_action")!.helper;
+    // Nothing to replace on an ordinary piece — saying otherwise would
+    // describe a staircase this is not.
+    expect(helper({})).toBeUndefined();
+    expect(helper({ goToFloor: "up" })).toContain("Replaces the floor change");
+  });
+
+  it("furniture leaves an unconfigured action unset rather than inventing one", () => {
+    // `undefined` is what `furnitureActionForGesture` reads as "whatever it did
+    // before actions existed" — a default written into the form here would turn
+    // every ordinary piece into a configured one on the first save.
+    const d = furnitureForm({ id: "f", type: "table", x: 0, y: 0, w: 10, h: 10 } as never).data;
+    expect(d.tap_action).toBeUndefined();
+    expect(d.hold_action).toBeUndefined();
+    expect(d.double_tap_action).toBeUndefined();
+  });
+
+  it("furniture carries stored actions back into the form", () => {
+    const d = furnitureForm({
+      id: "f",
+      type: "stairs",
+      x: 0,
+      y: 0,
+      w: 10,
+      h: 10,
+      goToFloor: "up",
+      tap_action: { action: "more-info", entity: "light.shelf" },
+      hold_action: { action: "toggle" },
+      double_tap_action: { action: "none" },
+    } as never).data;
+    expect(d).toMatchObject({
+      goToFloor: "up",
+      tap_action: { action: "more-info", entity: "light.shelf" },
+      hold_action: { action: "toggle" },
+      // `none` round-trips as itself: it is a configured action, and the card
+      // reads it as "stop changing floor on tap".
+      double_tap_action: { action: "none" },
+    });
+  });
+
+  it("furniture keeps an action through the patch that clears goToFloor", () => {
+    // `toPatch` rewrites the empty floor option to `undefined`; it must not
+    // take the actions with it.
+    const { toPatch } = furnitureForm({
+      id: "f",
+      type: "stairs",
+      x: 0,
+      y: 0,
+      w: 10,
+      h: 10,
+    } as never);
+    const out = toPatch({ goToFloor: "", tap_action: { action: "toggle" } } as never);
+    expect(out.goToFloor).toBeUndefined();
+    expect(out.tap_action).toEqual({ action: "toggle" });
+  });
+
   it("non-sectional furniture has no chaise-side field or data", () => {
     const form = furnitureForm({ id: "f", type: "table", x: 0, y: 0, w: 10, h: 10 } as never);
     expect(form.fields.map((x) => x.name)).not.toContain("hand");
@@ -1023,6 +1099,19 @@ describe("wallForm / projectForm / floorImageForm", () => {
     expect(form.data.thickness).toBe(8);
     expect(form.toPatch({ thickness: 8 })).toEqual({ thickness: undefined });
     expect(form.toPatch({ thickness: 5 })).toEqual({ thickness: 5 });
+  });
+
+  it("wall kind rests at Wall and writes down only a railing (issue #182)", () => {
+    const form = wallForm({ id: "w", x1: 0, y1: 0, x2: 1, y2: 1 });
+    expect(form.data.kind).toBe("wall");
+    expect(form.fields.map((f) => f.name)).toContain("kind");
+    expect(form.toPatch({ kind: "railing" })).toEqual({ kind: "railing" });
+    expect(form.toPatch({ kind: "wall" })).toEqual({ kind: undefined });
+    // Untouched fields stay out of the patch.
+    expect(form.toPatch({ x1: 5 })).toEqual({ x1: 5 });
+    expect(wallForm({ id: "w", x1: 0, y1: 0, x2: 1, y2: 1, kind: "railing" }).data.kind).toBe(
+      "railing"
+    );
   });
 
   it("wall reflects a custom thickness in its data", () => {
@@ -1592,9 +1681,15 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(defaultOf({ ...win, shutterEntity: "cover.s" } as Opening, "hold_action")).toBe("none");
   });
 
-  it("offers the icon switch only with two entities, and the glyph only while it is on", () => {
+  it("offers the icon switch whenever a shutter is bound, and the glyph only while it is on", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
-    expect(names({ ...win, shutterEntity: "cover.s" } as Opening)).not.toContain("showShutterIcon");
+    const alone = { ...win, shutterEntity: "cover.s" } as Opening;
+    expect(names({ ...win, entity: "binary_sensor.win" } as Opening)).not.toContain("showShutterIcon");
+    // A shutter with no window contact behind it (issue #293): the switch is
+    // offered, off, and the glyph waits for it.
+    expect(names(alone)).toContain("showShutterIcon");
+    expect(names(alone)).not.toContain("shutterIcon");
+    expect(names({ ...alone, showShutterIcon: true } as Opening)).toContain("shutterIcon");
     expect(names(both)).toContain("showShutterIcon");
     expect(names(both)).toContain("shutterIcon");
     // Nothing drawn, nothing to restyle.
@@ -1602,8 +1697,13 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     expect(names({ ...both, showShutterIcon: false } as Opening)).toContain("showShutterIcon");
   });
 
-  it("reads the switch back as on unless it was turned off", () => {
+  it("reads the switch back as its default unless it was turned the other way", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
+    const alone = { ...win, shutterEntity: "cover.s" } as Opening;
+    expect(openingForm(alone).data.showShutterIcon).toBe(false);
+    expect(openingForm({ ...alone, showShutterIcon: true } as Opening).data.showShutterIcon).toBe(
+      true
+    );
     expect(openingForm(both).data.showShutterIcon).toBe(true);
     expect(openingForm({ ...both, showShutterIcon: false } as Opening).data.showShutterIcon).toBe(
       false
@@ -1617,9 +1717,20 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
   it("writes down only the off switch, and drops both with the shutter", () => {
     const both = { ...win, entity: "binary_sensor.win", shutterEntity: "cover.s" } as Opening;
     const { toPatch } = openingForm(both);
-    expect(toPatch({ showShutterIcon: false })).toEqual({ showShutterIcon: false });
+    // Off takes the glyph override with it, as Show icon takes `icon`.
+    expect(toPatch({ showShutterIcon: false })).toEqual({
+      showShutterIcon: false,
+      shutterIcon: undefined,
+    });
     expect(toPatch({ showShutterIcon: true })).toEqual({ showShutterIcon: undefined });
     expect(toPatch({ shutterIcon: "mdi:mine" })).toEqual({ shutterIcon: "mdi:mine" });
+    // A shutter alone defaults the other way, so only "on" is written (issue #293).
+    const alone = openingForm({ ...win, shutterEntity: "cover.s" } as Opening).toPatch;
+    expect(alone({ showShutterIcon: true })).toEqual({ showShutterIcon: true });
+    expect(alone({ showShutterIcon: false })).toEqual({
+      showShutterIcon: undefined,
+      shutterIcon: undefined,
+    });
     const cleared = openingForm({
       ...both,
       showShutterIcon: false,
@@ -1627,6 +1738,71 @@ describe("openingForm — actions (issue #74 follow-up)", () => {
     } as Opening).toPatch({ shutterEntity: undefined });
     expect(cleared.showShutterIcon).toBeUndefined();
     expect(cleared.shutterIcon).toBeUndefined();
+  });
+
+  it("judges the stored switch against the entity the patch leaves behind (#304 review)", () => {
+    const aloneOn = { ...win, shutterEntity: "cover.s", showShutterIcon: true } as Opening;
+    const bothOff = {
+      ...win,
+      entity: "binary_sensor.win",
+      shutterEntity: "cover.s",
+      showShutterIcon: false,
+    } as Opening;
+    // Binding the window contact makes "on" the default, so the stored true goes.
+    expect(openingForm(aloneOn).toPatch({ entity: "binary_sensor.win" })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: undefined,
+    });
+    // Clearing it makes "off" the default, so the stored false goes.
+    expect(openingForm(bothOff).toPatch({ entity: undefined })).toMatchObject({
+      entity: undefined,
+      showShutterIcon: undefined,
+    });
+    // A stored answer that still differs from the new default is left alone.
+    expect(
+      openingForm({ ...aloneOn, showShutterIcon: false } as Opening).toPatch({
+        entity: "binary_sensor.win",
+      })
+    ).toEqual({ entity: "binary_sensor.win" });
+    // Both in one consolidated patch: the switch is judged by the new entity.
+    const alone = openingForm({ ...win, shutterEntity: "cover.s" } as Opening);
+    expect(alone.toPatch({ entity: "binary_sensor.win", showShutterIcon: true })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: undefined,
+    });
+    expect(alone.toPatch({ entity: "binary_sensor.win", showShutterIcon: false })).toEqual({
+      entity: "binary_sensor.win",
+      showShutterIcon: false,
+      shutterIcon: undefined,
+    });
+  });
+
+  it("drops the shutter glyph override with a badge the patch hides (#304 review)", () => {
+    const both = {
+      ...win,
+      entity: "binary_sensor.win",
+      shutterEntity: "cover.s",
+      shutterIcon: "mdi:mine",
+    } as Opening;
+    // Switched off, and switched off in the same breath as a new glyph: off wins.
+    expect(openingForm(both).toPatch({ showShutterIcon: false }).shutterIcon).toBeUndefined();
+    expect(
+      openingForm(both).toPatch({ showShutterIcon: false, shutterIcon: "mdi:other" })
+    ).toMatchObject({ shutterIcon: undefined });
+    // The contact cleared from under a badge that was only on by default: it
+    // hides, so the glyph goes.
+    const cleared = openingForm(both).toPatch({ entity: undefined });
+    expect("shutterIcon" in cleared && cleared.shutterIcon === undefined).toBe(true);
+    // …but not from under one switched on explicitly, which stays shown.
+    expect(
+      openingForm({ ...both, showShutterIcon: true } as Opening).toPatch({ entity: undefined })
+    ).not.toHaveProperty("shutterIcon");
+    // Turning it on, or binding a contact that shows it, leaves the glyph alone.
+    expect(openingForm(both).toPatch({ showShutterIcon: true })).not.toHaveProperty("shutterIcon");
+    expect(
+      openingForm({ ...win, shutterEntity: "cover.s", showShutterIcon: true, shutterIcon: "mdi:mine" } as Opening)
+        .toPatch({ entity: "binary_sensor.win" })
+    ).not.toHaveProperty("shutterIcon");
   });
 
   it("offers the tap target only with two entities to choose between", () => {
@@ -1726,11 +1902,12 @@ describe("projectReliefForm", () => {
   const names = (c: FloorplanCardConfig) => projectReliefForm(c).fields.map((f) => f.name);
 
   it("asks only whether to let the light in, until it is let in", () => {
-    expect(names(cfg())).toEqual(["sunlight"]);
+    expect(names(cfg())).toEqual(["ambientDaylight", "sunlight"]);
   });
 
   it("reveals north and the sun once the light is let in", () => {
     expect(names(cfg({ sunlight: true }))).toEqual([
+      "ambientDaylight",
       "sunlight",
       "north",
       "sunShade",
@@ -1909,7 +2086,11 @@ describe("every field lands in exactly one panel group", () => {
     ["showIcon", "icon"],
     ["tapTarget", "tap_action", "hold_action", "double_tap_action"],
   ];
-  const FURNITURE_GROUPS = [["type", "hand", "w", "h", "angle"], ["entity"], ["goToFloor"]];
+  const FURNITURE_GROUPS = [
+    ["type", "hand", "w", "h", "angle"],
+    ["entity"],
+    ["goToFloor", "tap_action", "hold_action", "double_tap_action"],
+  ];
   const TRACKER_GROUPS = [["w", "h", "x", "y", "angle"], ["dotSize"]];
   const AREA_GROUPS = [
     ["showName", "labelSize"],
@@ -2006,5 +2187,117 @@ describe("formSlice", () => {
     // renders nothing rather than throwing.
     expect(formSlice(spec, ["shutterStyle", "type"]).fields.map((f) => f.name)).toEqual(["type"]);
     expect(formSlice(spec, []).fields).toEqual([]);
+  });
+});
+
+describe("itemLabelForm — disableLabelColor and custom color state machine", () => {
+  const item = { id: "i", entity: "light.a", kind: "light", x: 0, y: 0, showName: true } as FloorItem;
+
+  it("offers disableLabelColor field when labelled", () => {
+    const fields = itemLabelForm(item)?.fields.map((f) => f.name) ?? [];
+    expect(fields).toContain("disableLabelColor");
+  });
+
+  it("clears custom color fields when disableLabelColor is toggled off", () => {
+    const form = itemLabelForm({
+      ...item,
+      disableLabelColor: true,
+      useCustomLabelColor: true,
+      labelCustomColor: "#ff0000",
+    } as FloorItem);
+
+    // Toggling disableLabelColor OFF must clear both useCustomLabelColor and labelCustomColor
+    const patch = form!.toPatch({ disableLabelColor: false });
+    expect(patch).toEqual({
+      disableLabelColor: undefined,
+      useCustomLabelColor: undefined,
+      labelCustomColor: undefined,
+    });
+  });
+
+  it("clears only labelCustomColor when useCustomLabelColor is toggled off", () => {
+    const form = itemLabelForm({
+      ...item,
+      disableLabelColor: true,
+      useCustomLabelColor: true,
+      labelCustomColor: "#ff0000",
+    } as FloorItem);
+
+    // Toggling useCustomLabelColor OFF must clear only labelCustomColor, keeping disableLabelColor
+    const patch = form!.toPatch({ useCustomLabelColor: false });
+    expect(patch).toEqual({
+      useCustomLabelColor: undefined,
+      labelCustomColor: undefined,
+    });
+  });
+
+  it("round-trips custom color when both toggles are enabled", () => {
+    const form = itemLabelForm(item);
+
+    expect(
+      form!.toPatch({
+        disableLabelColor: true,
+        useCustomLabelColor: true,
+        labelCustomColor: "#00ff00",
+      })
+    ).toEqual({
+      disableLabelColor: true,
+      useCustomLabelColor: true,
+      labelCustomColor: "#00ff00",
+    });
+  });
+});
+
+describe("itemGroup7aForm - showOnlyWhenZoomed", () => {
+  it("includes showOnlyWhenZoomed field and handles patching correctly", () => {
+    // Provide a fully compliant FloorItem mock
+    const item: FloorItem = { 
+      id: "test-item", 
+      x: 10, 
+      y: 10, 
+      entity: "sensor.test", 
+      kind: "sensor" 
+    };
+    const spec = itemGroup7aForm(item);
+
+    // 1. Verify the field exists in the form schema
+    const field = spec.fields.find((f) => f.name === "showOnlyWhenZoomed");
+    expect(field).toBeDefined();
+    expect(field?.selector).toEqual({ boolean: {} });
+
+    // 2. Verify data initialization defaults to false/undefined
+    expect(spec.data.showOnlyWhenZoomed).toBe(false);
+
+    // 3. Verify toPatch keeps true values
+    const patchTrue = spec.toPatch({ showOnlyWhenZoomed: true });
+    expect(patchTrue.showOnlyWhenZoomed).toBe(true);
+
+    // 4. Verify toPatch cleans up falsy/undefined values
+    const patchFalse = spec.toPatch({ showOnlyWhenZoomed: false });
+    expect(patchFalse.showOnlyWhenZoomed).toBeUndefined();
+  });
+
+  it("leaves the flag alone when the user is editing something else", () => {
+    // `_renderForm` diffs the form's data against the event and hands `toPatch`
+    // only the keys that changed, and `_updateItem` merges the result with a
+    // spread — so a key merely *present* and undefined overwrites the config.
+    // Group 7a holds two dozen other fields; pruning unconditionally meant
+    // switching on "Hide by condition" quietly switched this off.
+    //
+    // Asserted on key presence, not on the value: `toBeUndefined()` passes
+    // either way, which is exactly how this got through the first time.
+    const on = { id: "i", x: 0, y: 0, entity: "sensor.a", kind: "sensor",
+                 showOnlyWhenZoomed: true } as FloorItem;
+    const patch = itemGroup7aForm(on).toPatch({ enableHideByEntity: true });
+    expect("showOnlyWhenZoomed" in patch).toBe(false);
+    expect({ ...on, ...patch }.showOnlyWhenZoomed).toBe(true);
+  });
+
+  it("still prunes it when the user is the one turning it off", () => {
+    const on = { id: "i", x: 0, y: 0, entity: "sensor.a", kind: "sensor",
+                 showOnlyWhenZoomed: true } as FloorItem;
+    const patch = itemGroup7aForm(on).toPatch({ showOnlyWhenZoomed: false });
+    expect("showOnlyWhenZoomed" in patch).toBe(true);
+    expect({ ...on, ...patch }.showOnlyWhenZoomed).toBeUndefined();
   });
 });

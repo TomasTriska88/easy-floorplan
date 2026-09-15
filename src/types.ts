@@ -22,6 +22,14 @@ export interface HomeAssistant extends BaseHomeAssistant {
    */
   formatEntityState(stateObj: HassEntity, state?: string): string;
   /**
+   * The same, for one of an entity's attributes. Carried by HA since 2023.9
+   * and, like `formatEntityState`, the only thing that knows a cover position
+   * is a percentage or a temperature has a degree sign — the raw attribute is
+   * a bare number. Optional because a frontend older than that has none, which
+   * {@link entityAttributeText} falls back for.
+   */
+  formatEntityAttributeValue?(stateObj: HassEntity, attribute: string): string;
+  /**
    * The entity registry as the frontend exposes it. `custom-card-helpers` does
    * not declare it, though HA has handed it to cards since 2023.4. It carries
    * the user's per-entity icon override, which never appears in the state's
@@ -30,10 +38,19 @@ export interface HomeAssistant extends BaseHomeAssistant {
   entities?: Record<string, { icon?: string } | undefined>;
 }
 
-/** The slice of `hass` the card draws from. */
+/**
+ * The slice of `hass` the card draws from.
+ *
+ * Every wording HA owns has to be listed here, not just reachable off the real
+ * `hass`: this is what the card renders through, and anything missing silently
+ * degrades to whatever the raw state object says. A cover position left off
+ * this interface drew "50" on the card and "50%" in the editor, because the
+ * editor hands the real `hass` straight to the same helper (issue #260).
+ */
 export interface RenderHass {
   states: Record<string, HassEntity | undefined>;
   formatEntityState(stateObj: HassEntity): string;
+  formatEntityAttributeValue?(stateObj: HassEntity, attribute: string): string;
 }
 
 /** A straight wall segment in virtual coordinate space. */
@@ -52,6 +69,16 @@ export interface Wall {
    * cleared by its own opening. Raise the ceiling only alongside that mask.
    */
   thickness?: number;
+  /**
+   * What the line stands for (issue #182). Unset is a full-height `wall`.
+   *
+   * A `railing` is the low edge of a balcony, terrace or gallery: it is drawn
+   * as a thin line, and it is not in the way of anything that happens above
+   * waist height. Lamp light and sunlight carry on over it — a railing across
+   * a balcony used to shade the balcony door behind it all day — and it seals
+   * off no dead space, since what it encloses is open to the air.
+   */
+  kind?: WallKind;
   /**
    * Pinned in place in the editor (issue #191).
    *
@@ -76,6 +103,9 @@ export interface Wall {
    */
   locked?: boolean;
 }
+
+/** See {@link Wall.kind}. */
+export type WallKind = "wall" | "railing";
 
 export type OpeningType = "door" | "window";
 
@@ -113,8 +143,22 @@ export interface Opening {
    * but keeps everything else an opening has: it is still tappable, still
    * badges, and still glass to the light. What it never is, is a gap: see
    * {@link openingClearFraction}, which answers 0 for it whatever a sensor says.
+   *
+   * `awning` is the top-hinged window (issue #272): hinged at its head, swung
+   * out at the sill. A fifth motion for the same reason `fixed` is a fourth —
+   * it is a different way of moving, and in plan it is a different drawing
+   * entirely. A casement rotates *within* the plan and sweeps an arc across the
+   * floor; an awning rotates about a horizontal axis and leaves the plan
+   * altogether, so you see it edge-on projecting from the wall with the hinge
+   * knuckles left behind on the wall line.
+   *
+   * Calling it a hinge direction on `swing` was the alternative, and it would
+   * have made {@link sash} and {@link flipH} meaningless without saying so:
+   * an awning has no hinge jamb to pick and no second leaf to hang. {@link flipV}
+   * stays meaningful — it is which side of the wall the sash swings out to, so
+   * it is also how you draw a bottom-hinged hopper opening inward.
    */
-  motion?: "swing" | "slide" | "roll" | "fixed";
+  motion?: "swing" | "slide" | "roll" | "fixed" | "awning";
   /**
    * How much of the opening the operable sash actually covers, as a fraction
    * of `length` (0..1]. Default 1 — the sash fills the opening, which is what
@@ -174,6 +218,27 @@ export interface Opening {
   /** Color of the leaf/sash and swing arc while actively open. Falls back to the primary color. */
   activeColor?: string;
   /**
+   * Color of the leaf/sash and swing arc while **closed** (issue #228). Falls
+   * back to the wall color, which is what every opening drew before this
+   * existed — a closed door has always been a line the same colour as the wall
+   * it sits in, and that is exactly the problem when the thing you need to
+   * notice is a door that is *shut*.
+   *
+   * The moving parts only: the jambs and the static frame stay the wall's
+   * colour whether the opening is open or closed, so the symbol still reads as
+   * a hole in a wall rather than a coloured shape. An external shutter follows
+   * this too when it is down, the way it follows {@link activeColor} when it
+   * is up.
+   *
+   * Applies while the leaf is **drawn shut**, which is not quite the same
+   * question as "its entity is not active". The two agree for anything with a
+   * contact on it; without one they part company, because a swing door with no
+   * sensor is drawn open by the plan convention (see {@link
+   * openingDefaultOpen}) and is never active. Each leaf of a double is asked
+   * separately, so a pair with one sash open and one shut shows both colours.
+   */
+  inactiveColor?: string;
+  /**
    * Mirror the symbol left↔right in the opening's local frame. For a swing door
    * this moves the hinge to the other jamb; for a slider it reverses the slide
    * direction. Absent = the default orientation (hinge/anchor at the left jamb).
@@ -205,17 +270,26 @@ export interface Opening {
    * exception: a glass-brick panel, a hatch, a serving window with a solid
    * flap, all of which admit light only as far as they are open.
    *
-   * Only the sunlight reads this — it changes nothing about how the opening
-   * is drawn. See {@link openingIsGlazed}.
+   * Only the light reads this — it changes nothing about how the opening is
+   * drawn. All three layers ask the same question through the same helper:
+   * direct sunlight, a lamp's pool, and diffuse
+   * {@link FloorplanCardConfig.ambientDaylight}. See {@link openingIsGlazed},
+   * and {@link openingGlassIsClear} for the roll-motion exception they share.
    */
   glazed?: boolean;
   /**
-   * Whether this opening takes part in the sunlight at all (default `true`).
+   * Whether this opening takes part in the **natural** light at all (default
+   * `true`).
    *
-   * `false` makes it wall as far as the sun is concerned: no patch of its own,
-   * and it stops a beam crossing it like any other stretch of wall. Nothing
-   * else changes — it is still drawn, still tappable, still lets a lamp's pool
-   * through if it is open.
+   * `false` makes it wall as far as the sky is concerned: no patch of its own,
+   * and it stops a beam crossing it like any other stretch of wall. Both
+   * outdoor layers read it — direct {@link FloorplanCardConfig.sunlight} and
+   * diffuse {@link FloorplanCardConfig.ambientDaylight} — because a door the
+   * sun cannot get through is not one the sky gets through either, and one
+   * flag saying "shut to the outside" beats two that have to agree.
+   *
+   * Indoors nothing changes: it is still drawn, still tappable, and still lets
+   * a lamp's pool through if it is open.
    *
    * The case it exists for (issue #177): a **solid front door with no sensor
    * bound**. The plan draws such a door open, because that is the floor-plan
@@ -318,11 +392,15 @@ export interface Opening {
    */
   icon?: string;
   /**
-   * Draw the shutter's icon beside the opening (default true, whenever both
-   * entities are bound). It is what makes the second entity visible at all —
-   * and a control of its own, since tapping it opens the shutter — but on a
-   * dense plan, or one where every window has a shutter, it is a lot of
-   * icons. Turning it off leaves the gestures untouched.
+   * Draw the shutter's icon beside the opening. Defaults to true when the
+   * opening's own entity is bound too: it is what makes the second entity
+   * visible at all — and a control of its own, since tapping it opens the
+   * shutter — but on a dense plan, or one where every window has a shutter, it
+   * is a lot of icons. Turning it off leaves the gestures untouched.
+   *
+   * Defaults to false with the shutter bound alone, where there is no second
+   * entity to reveal; `true` is for the raised roll-up that has left nothing on
+   * the plan but its track line (issue #293).
    */
   showShutterIcon?: boolean;
   /**
@@ -587,8 +665,24 @@ export interface FloorItem {
    * "Active" is the same domain-aware test the badge highlight uses
    * ({@link entityIsActive}), so a lock reads unlocked, a vacuum cleaning.
    */
-  // --- Extended hide logic for the entire item (Whole-Item) ---
   hideWhenInactive?: boolean;
+  /**
+   * Keep this device off the full plan and show it only while the room it
+   * belongs to is zoomed into (issue #222). Which room that is comes from the
+   * area polygon it sits inside, or from {@link area} when it is named.
+   *
+   * A device with this set and no room to be in never appears on the card. The
+   * editor still draws it, so it stays selectable and fixable.
+   */
+  showOnlyWhenZoomed?: boolean;
+  /**
+   * The room this device belongs to — an {@link Area} `id` or `name` — for
+   * {@link showOnlyWhenZoomed} to read instead of asking where the device is
+   * drawn. For the one that belongs to a room without sitting inside it: a
+   * doorbell on the porch, a thermostat out in the hall.
+   */
+  area?: string;
+  // --- Extended hide logic for the entire item (Whole-Item) ---
   enableHideByEntity?: boolean;
   hideEntity?: string;
   /** Attribute to read instead of the state for the hide condition. */
@@ -657,11 +751,40 @@ export interface FloorItem {
    * Same meaning as {@link Opening.activeColor}.
    */
   activeColor?: string;
+  /**
+   * Badge color while the entity is **not** active (issue #228) — off, closed,
+   * locked, docked, whatever this domain's word for it is. Falls back to the
+   * neutral badge every device has always shown when it is off.
+   *
+   * A {@link stateColor} rule can already paint a badge, and for a plain switch
+   * `state: "off"` would do the same job. This exists because that requires
+   * knowing the word: a lock says `locked`, a cover says `closed`, a vacuum
+   * says `docked`, and a rule written for one is silently wrong on another.
+   * `inactiveColor` is resolved through {@link entityIsActive}, which already
+   * knows each domain's answer — so it means "off" for every domain at once.
+   *
+   * Rules still win over it, as they win over {@link activeColor}: they are the
+   * more specific statement about what this device should look like right now.
+   */
+  inactiveColor?: string;
+  /** Disables the state-driven color inheritance for the label, falling back to the default theme text color. */
+  disableLabelColor?: boolean;
+  /** Activates a custom color override for the label. Only applies when disableLabelColor is true. */
+  useCustomLabelColor?: boolean;
+  /** The specific custom color applied to the label when useCustomLabelColor is true. */
+  labelCustomColor?: string;
   /** Ripple ring color (CSS/hex). Falls back to `activeColor`, then the primary color. */
   rippleColor?: string;
   /** Max ripple ring diameter in pixels. Default 80. */
   rippleSize?: number;
-  /** Direction of the center of the ripple if its width is not 360° in degrees. Default 0° (top). */
+  /**
+   * Direction of the center of the ripple if its width is not 360°, in degrees.
+   * Default 0° (top).
+   *
+   * Measured on the **plan**, not on the screen: it says which way the sensor
+   * looks in the room, so a card drawn with `rotation` turns it with the
+   * drawing (issue #280). Stored unrotated, exactly as the editor shows it.
+   */
   rippleDirection?: number;
   /** Width of the ripple in degrees. Default 360° (all around). */
   rippleWidth?: number;
@@ -849,7 +972,9 @@ export type FurnitureType =
   | "sectional"
   | "fishTank"
   | "piano"
-  | "hotTub";
+  | "hotTub"
+  | "quarterTub"
+  | "cornerShowerCurved";
 
 /**
  * Which end of an L-shaped sectional the chaise sits on, facing the sofa from
@@ -897,10 +1022,27 @@ export interface Furniture {
    */
   goToFloor?: "up" | "down";
   /**
+   * What a gesture on this piece does (issue #284): "I would like the option to
+   * select either a floor or the tap actions like we have for areas."
+   *
+   * Same shape as {@link Area.tap_action}, and the same relationship to the
+   * behaviour the piece already had. {@link goToFloor} is to furniture what the
+   * zoom is to a room: the thing a tap does when nothing else is configured. A
+   * `tap_action` replaces it; hold and double-tap are free either way, so a
+   * staircase can keep changing floor on tap and still open more-info on hold.
+   *
+   * An action with no `entity` of its own falls back to this piece's
+   * {@link entity}, exactly as a room's does — so binding a cabinet's contact
+   * sensor once is enough for `more-info` to know what to show.
+   */
+  tap_action?: ActionConfig;
+  hold_action?: ActionConfig;
+  double_tap_action?: ActionConfig;
+  /**
    * Optional entity that makes the drawing live (issue #82) — a soil sensor on
    * a plant, a water temperature sensor on a fish tank, a contact sensor on a
-   * cabinet. Drives {@link stateColor} and {@link activeColor}; furniture has
-   * no click action, so an unbound piece is still just a gray diagram.
+   * cabinet. Drives {@link stateColor} and {@link activeColor}, and stands in
+   * as the target for any action that names none of its own (issue #284).
    */
   entity?: string;
   /**
@@ -1399,6 +1541,27 @@ export interface HistoryReplayConfig {
   numericSteps?: number;
 }
 
+/**
+ * One named colour in a plan's palette (issue #265).
+ *
+ * The `name` is both the label in the dropdown and the identity of the colour:
+ * the custom property every reference points at is derived from it. So the
+ * editor rewrites the references rather than leaving them behind — a rename
+ * moves them to the new name, and a delete freezes them at the colour the name
+ * was holding.
+ *
+ * That rewriting is not politeness. A reference to a property nothing declares
+ * is not a colour to fall back from: the declaration is dropped, the element
+ * inherits, and an SVG `fill` inherits **black**. A dangling reference would
+ * repaint half a plan.
+ */
+export interface PaletteColor {
+  /** Shown in the dropdown, e.g. `Warm white`. */
+  name: string;
+  /** Any colour the card accepts — hex, a CSS name, `rgb()`, even a theme `var()`. */
+  color: string;
+}
+
 export interface FloorplanCardConfig extends LovelaceCardConfig {
   type: string;
   title?: string;
@@ -1461,6 +1624,19 @@ export interface FloorplanCardConfig extends LovelaceCardConfig {
    * `src/skins.ts`.
    */
   skin?: string;
+  /**
+   * Named colours for this plan (issue #265), offered in a dropdown beside
+   * every colour field: *"I want all my temperature sensors to use the same
+   * conditional colours but I hate copying colour hex codes across so many
+   * entities."*
+   *
+   * A field references an entry by storing `var(--fp-color-<name>)` — the name
+   * lowercased with anything but letters and digits turned into `-`. That is a
+   * plain CSS custom property, declared on the card from this list, so a
+   * hand-written config can use the feature without the editor and recolouring
+   * an entry moves every element that names it. See `src/palette.ts`.
+   */
+  palette?: PaletteColor[];
   /**
    * How the HTML overlay (badges, labels, room names, text) is sized.
    *
@@ -1558,6 +1734,16 @@ export interface FloorplanCardConfig extends LovelaceCardConfig {
   /** Plan brightness in full daylight, 0-1. Default {@link DEFAULT_SUN_MAX}. */
   sunBrightnessMax?: number;
   /**
+   * Paint soft diffuse daylight from the visible sky through exterior openings.
+   * This is deliberately independent of direct {@link sunlight}: a north-facing
+   * window can brighten its room even when no direct sun ray reaches that wall.
+   *
+   * V1 derives exterior openings from Area adjacency and clips each wash to its
+   * Area polygon, so complete room Areas are required for reliable topology.
+   * Off by default for backward compatibility.
+   */
+  ambientDaylight?: boolean;
+  /**
    * Let the sun in (issue: sunlight through openings). Light arrives from
    * {@link sunBearing}, enters through every window and every open door, and
    * is stopped by the walls — so the rooms it never reaches are drawn a shade
@@ -1649,6 +1835,26 @@ export interface FloorplanCardConfig extends LovelaceCardConfig {
   floors?: Floor[];
   /** Id of the floor shown first. Falls back to the first floor. */
   defaultFloor?: string;
+  /**
+   * Where the floor switcher sits on the plan (issue #281), in canvas units —
+   * the point the block of buttons is centred on.
+   *
+   * If unset, it stays pinned to the plan's top-right corner, which is where it
+   * has always been and is right until the plan has something there: *"they often
+   * end up right in the middle of the floor plan on smaller screens."* The
+   * corner is a guess about the drawing, and only the author knows which corner
+   * of their plan is empty.
+   *
+   * Canvas units rather than screen pixels or a percentage of the card, because
+   * the switcher lives inside the plan box and this is a statement about the
+   * *drawing*: put it in the hall, not 12px from an edge whose position depends
+   * on the phone. It follows `rotation` the way every other anchor does, so a
+   * rotated card keeps it in the same corner of the house.
+   *
+   * Off-canvas coordinates are honoured rather than clamped — a plan whose
+   * walls stop short of the canvas has legitimate empty margin to park it in.
+   */
+  floorSwitcher?: { x: number; y: number };
   /** Optional history replay controls and playback defaults. */
   historyReplay?: HistoryReplayConfig;
   walls?: Wall[];

@@ -28,6 +28,7 @@ Back to the [README](../README.md).
 | `sunShade`   | boolean  | `true`             | Darken everywhere the light does not reach. Off draws the patches alone, leaving the plan as bright as it was. |
 | `sunlightColor` | string | warm white        | Colour of the light the openings let in. |
 | `sunShadeColor` | string | black             | Colour of that shade — a blue reads as cold north light, a warm grey as dusk. |
+| `ambientDaylight` | boolean | `false`          | Soft room-aware daylight from the sky through exterior openings, independent of sun bearing. Needs Area polygons. See [Ambient daylight](lighting.md#ambient-daylight). |
 | `sunReach`   | number   | `0.34`             | How far light carries from an opening, as a fraction of the plan's shorter side. It fades out over that distance rather than stopping at it, and shortens as the sun climbs. Clamped to `0.02`–`1.5`; anything unreadable falls back to the default. |
 | `skin`       | string   | `default`          | Built-in look for the whole plan: `default`, `odnetnin`, `pastel` or `tron`. See [Skins](appearance.md#skins). |
 | `pressEffect`| string   | `scale`            | Feedback when a device is pressed: `scale`, `ripple`, `flash` or `none`. Only devices that actually do something respond. See [Press feedback](../README.md#press-feedback). |
@@ -36,8 +37,10 @@ Back to the [README](../README.md).
 | `overlayScale`| string  | `fixed`; `plan` in new plans | How badges, labels, room names and text are sized: `plan` = canvas units so they scale with the drawing, `fixed` = screen pixels. A card added from the picker is created with `plan`; a config that doesn't say renders `fixed`, which is what every plan drawn before the option existed was laid out in. See [Overlay scale](appearance.md#overlay-scale). |
 | `zoomedOverlayScale` | number | `1` | Overlay size while zoomed in to a room, as a multiple of its size at full plan. `1` — the default — holds badges, labels and text at the size they have unzoomed, which is what zooming has always done. Raise it for a wall tablet read at arm's length, lower it to get a dense room's badges out of the way. Applies to the whole overlay so a badge and its label scale as one thing, and does nothing at full plan. |
 | `background` | string   | skin / card bg     | Canvas background color (CSS / hex). Overrides the skin's paper. |
+| `palette`    | Palette[]| —                  | Named colours for this plan, referenced from any colour field as `var(--fp-color-<name>)`. See [Named colors](appearance.md#named-colors). |
 | `floors`     | Floor[]  | —                  | Per-floor element groups (see [Floor](#floor)).   |
 | `defaultFloor`| string  | first floor        | Id of the floor shown first.                 |
+| `floorSwitcher` | `{x, y}` | top-right corner | Where the floor buttons sit on the plan, in canvas units — the point the block is centred on. Drag it on the editor canvas. Follows `rotation` like every other anchor. See [Where the floor switcher sits](appearance.md#where-the-floor-switcher-sits). |
 | `walls`      | Wall[]   | `[]`               | Wall segments (single-floor / floor 1).      |
 | `openings`   | Opening[]| `[]`               | Doors and windows (swing or sliding).        |
 | `items`      | Item[]   | `[]`               | Entity devices.                              |
@@ -51,6 +54,20 @@ Back to the [README](../README.md).
 When `floors` is present each floor carries its own `walls`, `openings`, `items`, `texts`,
 `furniture`, `trackers` and `areas`. The top-level arrays describe a single implicit floor
 and remain valid for backward compatibility.
+
+### Palette
+
+One entry per named colour. See [Named colors](appearance.md#named-colors) for how to
+point a field at one.
+
+| Option  | Type   | Default | Description                                            |
+| ------- | ------ | ------- | ------------------------------------------------------ |
+| `name`  | string | —       | Shown in the dropdown, and what the reference is built from: lowercased, with anything but letters and digits turned into `-`. `Warm white` is `var(--fp-color-warm-white)`. |
+| `color` | string | —       | Any colour the card accepts — hex, a CSS name, `rgb()`, `color-mix()`, or a theme `var()`. |
+
+An entry with no usable name, or a colour the card would refuse anywhere else, is
+dropped — the rest of the palette still works. Two names that reduce to the same
+reference are the same colour, and only the first is kept.
 
 ## History replay
 
@@ -127,12 +144,17 @@ distorted anyway.
 
 ## Wall
 
-`{ id, x1, y1, x2, y2, thickness?, locked? }` — endpoints in virtual units.
+`{ id, x1, y1, x2, y2, thickness?, kind?, locked? }` — endpoints in virtual units.
 
 **`thickness`** is the stroke width in virtual units, set per wall by the **Thickness**
 slider in the editor. It defaults to `8` and is capped at `10`: a doorway is cut through
 the wall layer with a mask sized off the shared default, not per wall, so a wall drawn
 wider than the cap would not be fully cleared by its own door or window.
+
+**`kind`** is `wall` (the default, never written) or `railing` — the low edge of a
+balcony, terrace or gallery. A railing is drawn at 40% of the wall weight, lamp light and
+sunlight carry on over it, and it seals off no dead space. Editor: **Kind**. See
+[Balcony railings](appearance.md#balcony-railings).
 
 ## Opening (door / window)
 
@@ -140,12 +162,12 @@ wider than the cap would not be fully cleared by its own door or window.
 | ------------- | --------------------------- | ------------------------------------------------------ |
 | `id`          | string                      | Unique id.                                             |
 | `type`        | `door` \| `window`          | The kind of opening.                                   |
-| `motion`      | `swing` \| `slide` \| `roll` \| `fixed` | How it moves: hinged (default), sliding panels, a roll-up curtain (garage / roller shutter), or `fixed` — a window that does not open (bay, picture, sealed pane). A fixed opening draws no leaf and no arc, ignores `entity` for its drawing, and never counts as a gap; glazing still applies, so it passes daylight like the glass it is. |
-| `sunlight`    | boolean                     | `false` takes this opening out of [Sunlight](lighting.md#sunlight) entirely — it admits no light and blocks it like wall, however open it is drawn. Editor: **Lets sunlight in**. For the solid door with no sensor, which the plan draws open. |
-| `glazed`      | boolean                     | Lets sunlight through even when shut. Defaults per type — a window is glass, a door is not. Set `true` on a **patio or French door**, which is drawn as a door because that is how it swings but is a wall of glass; set `false` on an opaque window like a glass-brick panel or a hatch, which then admits light only as far as it is open. Only [Sunlight](lighting.md#sunlight) reads it. |
+| `motion`      | `swing` \| `slide` \| `roll` \| `fixed` \| `awning` | How it moves: hinged (default), sliding panels, a roll-up curtain (garage / roller shutter), `fixed` — a window that does not open (bay, picture, sealed pane) — or `awning`, hinged at the head and swung out at the sill. A fixed opening draws no leaf and no arc, ignores `entity` for its drawing, and never counts as a gap; glazing still applies, so it passes daylight like the glass it is. See [Top-hinged windows](appearance.md#top-hinged-windows) for `awning`. |
+| `sunlight`    | boolean                     | `false` takes this opening out of the **natural** light entirely — both [Sunlight](lighting.md#sunlight) and [Ambient daylight](lighting.md#ambient-daylight) — it admits no light and blocks it like wall, however open it is drawn. Editor: **Lets sunlight in**. For the solid door with no sensor, which the plan draws open. |
+| `glazed`      | boolean                     | Lets light through even when shut. Defaults per type — a window is glass, a door is not. Set `true` on a **patio or French door**, which is drawn as a door because that is how it swings but is a wall of glass; set `false` on an opaque window like a glass-brick panel or a hatch, which then admits light only as far as it is open. Every light layer reads it — [Sunlight](lighting.md#sunlight), [Ambient daylight](lighting.md#ambient-daylight) and a lamp's own pool — so glass is glass to all three. A `motion: roll` window is the exception: that is a roller shutter standing in for the glass, so it is judged by how far down it is. |
 | `sashSpan`    | number (0.05–1)             | Share of the opening the operable leaf covers; the rest is drawn as a fixed pane — thin glass on a window, a solid panel on a door. Default 1 (the leaf fills the frame). Single-**leaf** swing openings, doors included — a double already splits the frame between its leaves. The leaf hangs at the hinge jamb, so `flipH` moves it and its pane together, and a half-width leaf swung wide open clears half the opening rather than all of it. Values below `0.05` are clamped to it: a leaf of no width is a fixed pane, which `motion: fixed` says properly. |
 | `sash`        | `single` \| `double`        | Swing openings only: how many hinged leaves. The default differs by type, because the ordinary cases do — a window opens with `double` (two casement sashes), a door with `single` (one leaf across the opening). Set it to draw a single-sash window or a **double door**; both leaves then hinge at their own jamb and trace their own arc. Ignored by sliding and rolling openings. |
-| `shutterEntity` | string                     | An external shutter over the same gap (`cover` or contact), with its own open/closed state. With `entity` bound too, the card draws the shutter's own icon beside the opening — open/closed in both glyph and colour — and tapping that icon opens the shutter. |
+| `shutterEntity` | string                     | An external shutter over the same gap (`cover` or contact), with its own open/closed state. With `entity` bound too, the card draws the shutter's own icon beside the opening — open/closed in both glyph and colour — and tapping that icon opens the shutter. Bound alone, the icon is opt-in through `showShutterIcon`. |
 | `shutterStyle` | `swing` \| `roll`           | Louvered panels or a roll-up curtain. Defaults from the entity (contact → `swing`, `cover` → `roll`). |
 | `shutterInvert` | boolean                   | Flip the shutter's open/closed reading — a reed contact on hinged panels often reads `on` when they are shut. Separate from `invert`. |
 | `shutterSecondaryEntity` | string            | Hinged shutters only: a second contact for the shutter's other panel, so one can be folded back while the other is still across the glass. Its own key rather than `secondaryEntity` — a double casement behind a pair of shutters has four leaves. `shutterInvert` covers both panels; the roll curtain ignores it. |
@@ -158,11 +180,12 @@ wider than the cap would not be fully cleared by its own door or window.
 | `secondaryEntity` | string                  | Anything with **two leaves**: a second contact / `cover` for the other leaf, so each moves on its own state. That means the two-panel sliders (`biparting`, `biparting-bypass`, `converging`) and any hinged double — a casement window, or a `sash: double` door. `entity` drives the leaf at the −x jamb, so `flipH` swaps which sensor draws which. Unset = both follow `entity`; ignored where there is only one leaf. |
 | `invert`      | boolean                     | Flip the open/closed interpretation.                   |
 | `activeColor` | string                      | Leaf/arc color while actively open (default primary). On a roll-up it colours the curtain and the track it leaves behind, so a fully raised shutter still reads as open. |
+| `inactiveColor` | string                    | Leaf/arc color while **closed** (default: the wall color). The moving parts only — the jambs and frame stay the wall's color either way, so the symbol still reads as a hole in a wall. A shutter that is down follows it, as one that is up follows `activeColor`. An [offline](behavior.md#offline-devices) contact falls back to the wall color rather than drawing a confident "shut". See [Colors for on and off](behavior.md#colors-for-on-and-off). |
 | `flipH`       | boolean                     | Mirror left↔right. Swing door: hinge jamb. Sliding: slide direction. |
 | `flipV`       | boolean                     | Mirror across the wall so a swing opening faces the other room. |
 | `showIcon`    | boolean                     | Draw this opening's **own** icon beside it (default `false`). Editor: **Show icon**. For the roll-up: raised, its curtain is gone and only the coloured track is left, which is easy to miss across a room. Tapping the badge opens the entity's dialog. It sits on the opposite face of the wall from the shutter's badge, so an opening with both never stacks them. |
 | `icon`        | string                      | Override that icon. Absent, it is the entity's own — a **pair**, so the glyph itself says open or closed; an override is one glyph for both, and colour still reports the state. |
-| `showShutterIcon` | boolean                 | Draw that icon (default `true` whenever both are bound). Editor: **Shutter icon**. Turning it off changes nothing about the gestures — for a plan where every window has a shutter and the icons start to shout. |
+| `showShutterIcon` | boolean                 | Draw that icon. Defaults to `true` when `entity` is bound too, and `false` for a shutter bound alone — set `true` there for a roll-up shutter with no window contact, whose raised curtain leaves only its track line. Editor: **Shutter icon**. Turning it off changes nothing about the gestures — for a plan where every window has a shutter and the icons start to shout. |
 | `shutterIcon` | string                      | Override the icon's glyph. Left unset it follows the shutter entity, whose default comes in an open/closed pair; an override is one glyph for both states, and colour still reports the state. |
 | `tapTarget`   | `opening` \| `shutter`      | With both entities bound, which one a tap acts on (default `opening`); the other moves to press-and-hold. Editor: **Tap opens**. Pointing it at the shutter opens the shutter's dialog — it does not drive the motor; set `tap_action: toggle` for that. |
 | `tap_action`  | ActionConfig                | Standard Lovelace action, acting on whichever entity `tapTarget` leads with (or on `shutterEntity` when it is the only one bound). By default an open/close `cover` toggles and everything else opens more-info. An action's own `entity` picks which of the two it acts on. |
@@ -189,9 +212,10 @@ wider than the cap would not be fully cleared by its own door or window.
 | `display`     | `badge` \| `ripple` \| `iconRipple`    | `badge`      | How the device is drawn. The editor spells this as the **Ripple** toggle (plus **Badge shows: Nothing** for `ripple`) and offers it only on devices that detect something where they sit (see [Presence ripples](../README.md#presence-ripples)); in YAML it works on any entity. |
 | `iconAnimation` | `auto` \| `none` \| `spin` \| `pulse` | `auto`       | Animate the icon while active. `auto`: fan spins; media player / vacuum pulse. A `climate` entity animates only while its `hvac_action` says it is working — an AC holding `cool` at temperature keeps its colour but stops moving. The editor spells this as the icon options of **Badge shows**, showing `auto` as whatever it resolves to. |
 | `activeColor` | string                                 | theme color  | Badge color while on. Ignored while `stateColor` rules match. |
+| `inactiveColor` | string                               | theme badge  | Badge color while **off** — closed, locked or docked, whichever this entity's domain says. Ignored while `stateColor` rules match, and while the entity is [offline](behavior.md#offline-devices). See [Colors for on and off](behavior.md#colors-for-on-and-off). |
 | `rippleColor` | string                                 | `activeColor`| Ripple ring color, falling back to `activeColor` then the primary color. |
 | `rippleSize`  | number                                 | `80`         | Max ripple diameter (px).                              |
-| `rippleDirection` | number                             | `0`          | Direction the ripple arc is centred on, in degrees clockwise from the top. Only visible when `rippleWidth` is under `360`. Wraps to be between `0`–`360`. |
+| `rippleDirection` | number                             | `0`          | Direction the ripple arc is centred on, in degrees clockwise from the top **of the plan**, not of the screen — a rotated card turns the arc with the drawing, so it keeps pointing at the wall it was aimed at. Only visible when `rippleWidth` is under `360`. Wraps to be between `0`–`360`. |
 | `rippleWidth` | number                                 | `360`        | Angular width of the ripple arc in degrees. `360` rings all the way round; narrow it for a sensor on a wall that cannot see behind itself. Clamped to `0`–`360`. |
 | `glow`        | boolean                                | `false`      | Cast a pool of light onto the plan (lights only). See [Cast light](#cast-light). |
 | `glowRadius`  | number                                 | `140`        | Radius of the cast pool at full brightness, in canvas units. A dimmer lamp casts a proportionally smaller pool, down to half this. |
@@ -200,6 +224,8 @@ wider than the cap would not be fully cleared by its own door or window.
 | `badgeEntity` | `primary` \| number                    | automatic    | Which reading a `value` badge shows: the device's own entity, or an index into `readings`. Unset picks the first with a number; set, only that one is read (an index past the end shows the icon). `secondary` is accepted as the legacy spelling of `0`. |
 | `showIcon`    | boolean                                | `true`       | **Deprecated** — use `badgeContent`. Honoured only when it is unset (`false` = `none`). |
 | `hideWhenInactive` | boolean                           | `false`      | Hide on the card while the entity is inactive. Always shown, dimmed, in the editor. |
+| `showOnlyWhenZoomed` | boolean                         | `false`      | Keep the device off the full plan and show it only while its room is zoomed into. Its room is the area polygon it sits inside, or the one `area` names. Always shown in the editor. See [Devices that only appear up close](behavior.md#devices-that-only-appear-up-close). |
+| `area`        | string                                 | the polygon it's in | The room this device belongs to — an area `id` or `name` — for `showOnlyWhenZoomed` to read instead of asking where the device is drawn. For the one that belongs to a room without sitting inside it. |
 | `showState`   | boolean                                | sensors only | Show the entity state in the label line. Governs this device's **own** state only — `readings` show regardless. |
 | `showName`    | boolean                                | `false`      | Show the device's name in the label line (`Name · state` when combined). |
 | `readings`    | `{ entity?, attribute?, showState? }[]` | —           | Everything this device reads beyond its own state — a sensor's humidity and pressure, a plug's power, link quality and battery. These print whatever the **device's** `showState` says, since that one is about the device's own entity. To hide one of *these*, set its **own** `showState: false`, which keeps it bound (the badge can still read it) without printing it. See [More readings per device](configuration.md#more-readings-per-device). |
@@ -294,7 +320,7 @@ there reads `—`, the same as a device's label.
 
 ## Furniture
 
-`{ id, type, x, y, w, h, angle?, hand?, color?, entity?, activeColor?, stateColor?, goToFloor?, locked? }`
+`{ id, type, x, y, w, h, angle?, hand?, color?, entity?, activeColor?, stateColor?, goToFloor?, tap_action?, hold_action?, double_tap_action?, locked? }`
 
 `type` names a **symbol** — one of the ~26 the card ships with (`table`, `sofa`, `bed`,
 `fridge`, `stairs`, …; the full set is [`furniture/`](../furniture), a file each), or one you
@@ -312,6 +338,12 @@ contact sensor is open.
 
 **`goToFloor`** (`up` / `down`) makes clicking the piece change floor — written for the
 `stairs` symbol. See [Stairs that change floor](behavior.md#stairs-that-change-floor).
+
+**`tap_action` / `hold_action` / `double_tap_action`** give a piece the same actions a room
+has (same shape as a device's). `goToFloor` is to furniture what the zoom is to a room: what
+a tap does when nothing else is set, so setting `tap_action` replaces it while hold and
+double-tap stay free. An action with no `entity` of its own uses the piece's. See
+[Actions on furniture](behavior.md#actions-on-furniture).
 
 ```yaml
 { id: plant1, type: plant, x: 300, y: 220, w: 40, h: 40,

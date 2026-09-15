@@ -1,6 +1,6 @@
 # Appearance
 
-How the plan presents itself: its palette, the size of what it draws, and the hooks to restyle it.
+How the plan presents itself: its colours, the size of what it draws, and the hooks to restyle it.
 
 Back to the [README](../README.md).
 
@@ -88,6 +88,172 @@ card_mod:
       --fp-skin-accent: #f2aa4c !important;
     }
 ```
+
+## Named colors
+
+If every temperature sensor on a plan turns red above 25°, that hex code is written into
+every one of them — and changing your mind means finding them all again. Name the colour
+once instead, and point the fields at the name.
+
+Add names under **Project → Named colors**. Every colour field on the plan then grows a
+dropdown listing them; pick one and the field follows that name from then on. The dropdown
+only appears once a plan has a palette, so a plan that never names a colour sees the
+editor it always did.
+
+```yaml
+type: custom:easy-floorplan-card
+palette:
+  - name: Warm
+    color: "#ff8800"
+  - name: Alert
+    color: "#e53935"
+floors:
+  - id: ground
+    areas:
+      - id: living
+        color: var(--fp-color-warm)
+    items:
+      - id: thermostat
+        entity: sensor.living_temperature
+        stateColor:
+          - above: 25
+            color: var(--fp-color-alert)
+          - above: 0
+            color: var(--fp-color-warm)
+```
+
+A reference is an ordinary CSS custom property, which is what makes it work everywhere a
+colour does — room fills, badges, state rules, text, furniture, trackers, the floor
+buttons — with no separate syntax to learn. The name becomes the property by lowercasing
+it and turning anything that is not a letter or digit into a `-`, so `Warm white` is
+`var(--fp-color-warm-white)`.
+
+Two consequences worth knowing:
+
+- **Recolouring a name moves everything using it**, live. That is the point.
+- **Renaming or deleting one leaves nothing dangling.** A rename rewrites every reference
+  to the new name. A delete rewrites them to the colour the name held, so the plan looks
+  exactly as it did and has simply lost the link — a reference to a colour that no longer
+  exists is not a colour at all, and would paint black.
+
+The editor refuses a rename that would collide with another entry, since two names
+reducing to the same reference means one of them silently stops resolving.
+
+Because a reference is just CSS, you can also point one at a Home Assistant theme
+variable and let the palette follow your theme:
+
+```yaml
+palette:
+  - name: Accent
+    color: var(--primary-color)
+```
+
+## Top-hinged windows
+
+*"My windows are hinged at the top and swing out at the bottom."*
+
+Every other opening the card draws rotates **within** the plan: a casement
+sweeps an arc across the floor, a slider travels along the wall. A top-hung
+sash rotates about a horizontal axis and leaves the plan altogether — so in
+plan you see it edge-on, a blade projecting from the wall and narrowing as it
+goes, with the hinge knuckles left behind on the wall line and the glass it
+vacated drawn as a broken line.
+
+![A top-hinged window shut, part open, wide open, and opening inward](img/awning-window.png)
+
+```yaml
+openings:
+  - id: bath
+    type: window
+    motion: awning
+    x: 300
+    y: 500
+    length: 120
+    angle: 0
+    entity: binary_sensor.bathroom_window
+```
+
+Bind a position-aware `cover` and it projects proportionally, the way a partly
+open casement swings partly.
+
+### A motion, not a hinge direction
+
+`awning` sits beside `swing`, `slide`, `roll` and `fixed` rather than being a
+hinge setting on `swing`. Calling it a direction would have left two neighbours
+meaningless without saying so: an awning has no hinge **jamb** to pick, so
+`flipH` has nothing to mirror, and no second leaf to hang, so `sash` has nothing
+to count. The editor offers neither, and the card ignores both.
+
+`flipV` **does** still mean something — which side of the wall the sash swings
+out to. Which is also how you draw a bottom-hinged **hopper** that tilts inward:
+same picture, other side of the wall, so it needs no motion of its own.
+
+Offered on windows only, for the same reason `fixed` is: a top-hung sash is a
+window, and a top-hung door is not a thing. A hand-written config may still set
+it on a door and the card draws it honestly — this is about what the editor
+suggests, not what it allows.
+
+## Balcony railings
+
+*"Allow a wall in the floor plan to be marked as belonging to a balcony, rather than being
+treated as a full-height wall."* (issue #182)
+
+Every line the card draws used to be a wall, and walls stop light. A balcony drawn with
+walls came out as a sealed box: its lamp stopped dead at the edge, and the railing stood
+between the sun and the balcony door behind it, so no sunlight ever came in that way.
+
+Set a wall's **Kind** to **Railing** and it is drawn thin, and light carries on over it —
+a lamp's pool spills past the edge, and the sun reaches the door again.
+
+![Before and after: a lamp pool clipped at the balcony edge, then spilling over a thin railing with sunlight entering the balcony door](img/balcony-railing.png)
+
+```yaml
+walls:
+  - { id: rail-west,  x1: 220, y1: 250, x2: 220, y2: 380, kind: railing }
+  - { id: rail-south, x1: 220, y1: 380, x2: 540, y2: 380, kind: railing }
+  - { id: rail-east,  x1: 540, y1: 380, x2: 540, y2: 250, kind: railing }
+```
+
+A railing also seals off no [dead space](behavior.md#dead-spaces): whatever it encloses is
+open to the air. It still takes doors and windows the way a wall does — a gate in a
+railing is a door — and an explicit **Thickness** is scaled down with it, so a railing
+stays thinner than the walls beside it.
+
+## Where the floor switcher sits
+
+The floor buttons have always been pinned to the plan's top-right corner. That is a guess
+about the drawing, and only the author knows whether their plan has anything there — *"they
+often end up right in the middle of the floor plan on smaller screens"* (issue #281).
+
+![The same plan twice: the switcher over the bedroom, and moved down into the empty hall](img/floor-switcher-position.png)
+
+Drag it. In the editor the switcher appears on the canvas as a handle — dimmed while it is
+still in its default corner — and dropping it anywhere stores the point:
+
+```yaml
+type: custom:easy-floorplan-card
+floorSwitcher: { x: 200, y: 152 }
+```
+
+**Canvas units, not screen pixels**, because it is a statement about the drawing: put it in
+the hall, not twelve pixels from an edge whose position depends on the phone. That also
+means it follows `rotation` exactly as devices and labels do, so a plan turned for a wall
+tablet keeps the switcher in the same corner of the house.
+
+A point outside the canvas is kept rather than clamped — a plan whose walls stop short of
+the edge has real margin to park it in.
+
+**Zooming into a room does not carry the switcher with it.** The buttons are how you change
+floor, and a zoom can scale the plan well past the card, so a switcher that travelled with
+the drawing would leave the screen the moment you tapped a room at the far end — with no
+way to change floor until you zoomed back out. It holds its place in the card instead. The
+position you choose is measured against the unzoomed plan, which is the view people
+normally see.
+
+**Project → Floor switcher** carries X and Y fields and a *Back to the corner* button —
+the coordinates because a drag needs a pointer and is aimed by eye, and the button because
+returning to the default is the one thing a drag cannot express. Leave it alone and nothing changes: a plan
+that stores no position emits no positioning at all and renders exactly as it always has.
 
 ## Overlay scale
 
@@ -244,6 +410,13 @@ rotationLandscape: 0   # desktop, wall tablet
 In the editor: **Project → Display**, under *Rotate display*.
 
 Icons and labels stay upright at every angle, so a rotated plan is still readable.
+
+A **bearing** is the exception, and has to be: a ripple's `rippleDirection` says which way
+a sensor looks *in the room*, so it turns with the drawing rather than staying put on
+screen. Otherwise a cone aimed at a wall in the editor pointed at open space once the card
+was rotated (issue #280).
+
+![The same sensor at every rotation: before, the cone stays pointing up the screen while the wall moves; after, it follows the wall](img/ripple-direction-rotation.png)
 
 ## Styling hooks (card-mod)
 

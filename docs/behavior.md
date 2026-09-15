@@ -105,6 +105,107 @@ anything.
 A room with an action bound announces itself as a button and takes a tab stop; a room that
 only zooms does not, exactly as before.
 
+## Devices that only appear up close
+
+A busy plan cannot show every minor sensor at full zoom and stay readable. `showOnlyWhenZoomed`
+keeps a device off the overview and brings it back when its room is zoomed into (issue #222):
+
+```yaml
+items:
+  - id: bath_humidity
+    entity: sensor.bathroom_humidity
+    kind: sensor
+    x: 300
+    y: 250
+    showOnlyWhenZoomed: true
+```
+
+Which room a device belongs to is answered from the plan itself: the area polygon it is drawn
+inside. Nothing to keep in step — move the device or redraw the room and the answer follows.
+
+For a device that belongs to a room without sitting inside it — a doorbell out on the porch, a
+thermostat in the hall — name the room with `area`, by its `id` or its `name`:
+
+```yaml
+  - id: doorbell
+    entity: binary_sensor.doorbell
+    x: 960
+    y: 560
+    showOnlyWhenZoomed: true
+    area: porch
+```
+
+`area` wins over where the device is drawn, so it also corrects a device that sits in the wrong
+polygon.
+
+Two things worth knowing before you use it:
+
+- A device with the flag and **no room to be in** — no `area`, and inside no polygon — never
+  appears on the card. The editor still draws it, so it stays selectable and fixable; the card
+  is simply doing what it was asked.
+- The way in is the room tap, so a room whose `tap_action` [replaces the zoom](#actions-on-rooms)
+  has no way to reveal its devices. Put that action on `hold_action` instead.
+
+## Actions on furniture
+
+Furniture used to have exactly one thing it could do when clicked: change floor. A room
+has had tap, hold and double-tap actions since issue #181, and a piece of furniture is
+just as reasonable a thing to press — a cabinet that opens its contact sensor's history, a
+TV that toggles the lamp beside it.
+
+```yaml
+furniture:
+  - id: tv
+    type: tv
+    entity: media_player.living
+    tap_action: { action: toggle }
+    hold_action: { action: more-info }
+```
+
+![The editor's Behavior group for a staircase: Go to floor, then Tap, Hold and Double-tap action](img/furniture-actions.png)
+
+`goToFloor` is to a piece what the zoom is to a room: the thing a tap does when nothing
+else is configured. So the two compose rather than competing —
+
+- **`goToFloor` alone** keeps changing floor on tap, exactly as before.
+- **a `tap_action`** replaces the floor change. Its tooltip stops promising a floor it will
+  no longer go to.
+- **`goToFloor` plus a hold or double-tap action** keeps both: tap still moves you, hold
+  does the other thing.
+- **`tap_action: { action: none }`** is how you say "this staircase should not move me" —
+  `none` is a configured action, not an absent one.
+
+An action that names no `entity` falls back to the piece's own, so binding a cabinet's
+contact sensor once is enough for `more-info` to know what to show. A piece with neither a
+floor to go to nor any action stays inert: no button role, no tab stop, nothing that
+announces itself and then does nothing.
+
+"Any action" means one that could actually run, not merely one that is written down. A
+`more-info` with no entity to show, a `navigate` with no path, a `call-service` with no
+service and anything set to `none` all count as nothing to do: the piece stays inert, and
+its hold and double-tap timers are never armed — otherwise every tap would wait out a hold
+that was never going to fire. A staircase whose `goToFloor` is switched off by a
+`tap_action` that cannot run is inert too; an unusable tap is still a configured one, so it
+suppresses the floor change the same way `none` does.
+
+The button role and the tab stop are earned by the **tap** specifically, not by any gesture.
+Enter and Space are the keyboard's only activation and the card turns both into a tap, so a
+piece whose sole action sits on hold or double-tap would take focus, announce itself as a
+button, and then do nothing when pressed. Such a piece still answers a pointer hold; it
+just does not advertise a control nobody can operate from a keyboard. (Hold and double-tap
+are pointer gestures everywhere on the plan, on items and rooms too, for the same reason.)
+
+A piece that *does* answer a tap is a button, and the drawing gives a screen reader
+nothing to call it by. Where the floor tooltip is not already naming it, the card names it
+after the entity the gesture will act on — the action's own `entity` where it names one —
+using its friendly name, or the entity id. Only `toggle` and `more-info` act on an entity,
+so a `navigate` or a `url` supplies no name; the piece's own `entity` answers instead,
+since that is what the drawing is bound to. Failing both, the symbol the piece is drawn as,
+by the name its definition carries rather than its id — `cornerShowerCurved` is announced as
+"curved corner shower", and a symbol your own config defines brings its own name with it.
+When gestures target different entities the tap wins, then the hold, then the double-tap,
+and a gesture that could not run never supplies the name.
+
 ## Stairs that change floor
 
 A staircase already draws an arrow saying which way it goes. `goToFloor` makes that a
@@ -134,8 +235,81 @@ The option is on **furniture generally**, not just the built-in `stairs` symbol 
 can [draw its own](configuration.md#drawing-your-own) staircase, and a rule keyed on one symbol id would
 leave those out. It sits under **Behavior** in the furniture panel.
 
-This does not replace the floor switcher in the card's corner; the stairs are a second way
-up. Set `floors` and you get both.
+This does not replace the floor switcher — by default in the plan's top-right corner, or
+[wherever you put it](appearance.md#where-the-floor-switcher-sits); the stairs are a second
+way up. Set `floors` and you get both.
+
+## Colors for on and off
+
+A device badge has always been able to say what colour it is when it is **on**,
+and nothing at all about when it is **off** — every off device is the same
+neutral badge. Same for an opening: a closed door is a line the same colour as
+the wall it sits in. Which is exactly backwards when the thing you need to
+notice is the door that is *shut*, or the valve that is *closed*.
+
+![The same plan twice: on the left every shut device is a neutral badge and every
+closed sash is a line the colour of the wall; on the right they are red](img/inactive-color.png)
+
+`inactiveColor` is the counterpart to `activeColor`, on both:
+
+```yaml
+items:
+  - id: garage
+    entity: cover.garage_door
+    activeColor: "#2e7d32"    # open — fine
+    inactiveColor: "#c62828"  # closed — look at me
+
+openings:
+  - id: front
+    type: door
+    entity: binary_sensor.front_door
+    activeColor: "#2e7d32"
+    inactiveColor: "#c62828"
+```
+
+### Why not just a state rule
+
+A `stateColor` rule can already paint a badge, and for a plain switch
+`{ state: "off", color: "#c62828" }` does the same job. The catch is that it
+requires knowing the word. A lock says `locked`, a cover says `closed`, a vacuum
+says `docked` — a rule written for one is silently wrong on the next, and the
+symptom is a badge that simply never changes colour.
+
+`inactiveColor` is resolved through the same domain table that decides whether a
+device is drawn as "on" at all, so it means off for every domain at once.
+
+Rules still win over it, exactly as they win over `activeColor`: a threshold or
+an exact state is the more specific statement about what this element should
+look like right now.
+
+### What it does not touch
+
+- **The jambs and frame of an opening.** Only the leaf, the sash and the swing
+  arc move — recolouring the frame would turn the symbol from a hole in a wall
+  into a coloured shape.
+- **Furniture and areas.** Both already have a static `color`, which *is* their
+  off colour: `activeColor` paints over it while the entity is on, and it shows
+  through the rest of the time.
+- **An entity that has dropped out.** `unavailable`, `unknown`, or an entity id
+  Home Assistant does not answer to falls back to the resting badge and the wall
+  colour, exactly as it did before this option existed. It is not active either,
+  so without that it would wear the same emphatic "shut" as a device that really
+  is — and under `offlineStyle: none`, which draws no fading, the two would be
+  the same picture. See [Offline devices](#offline-devices).
+
+An element with **no entity bound at all** is a different thing and does paint:
+there is nothing about a hand-drawn shut window that could be wrong.
+
+For an opening the question asked is whether it is *drawn shut*, not whether its
+sensor is quiet. The two agree for anything with a contact on it, and come apart
+without one: a swing door with no sensor is drawn **open** by the usual
+floor-plan convention, so it keeps the wall colour, while an unbound window
+renders shut and wears the closed one. Each leaf of a double is asked
+separately, so a pair with one sash open and one shut shows both colours.
+
+The editor's canvas follows the same rule. A preview that disagrees with the
+card is worse than no preview, because the plan gets tuned against a picture the
+dashboard will not draw.
 
 ## Offline devices
 
