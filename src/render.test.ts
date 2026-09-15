@@ -105,6 +105,9 @@ import {
   areaLabelFontSize,
   wallThickness,
   wallStrokeStyle,
+  wallsThatBlock,
+  isRailing,
+  RAILING_WEIGHT,
   normalizeOverlayScale,
   overlayLength,
   hassRenderInputsChanged,
@@ -134,6 +137,7 @@ import {
   rotatePlanPoint,
   planRotationTransform,
   polygonCentroid,
+  areaLabelPoint,
   areaZoomTransform,
   resolveAreaZoom,
   zoomedOverlayScale,
@@ -162,7 +166,8 @@ import {
   itemLabelColor,
 } from "./render";
 import { buildRenderHass } from "./replay-history/render-state-service";
-import type { FloorplanCardConfig, Opening, RenderHass } from "./types";
+import type { FloorplanCardConfig, Opening, RenderHass, Wall } from "./types";
+import { deadSpaces } from "./dead-space";
 import { symbolCatalog, symbolSize } from "./symbols";
 
 /**
@@ -4095,6 +4100,53 @@ describe("overlay size while zoomed (issue #222)", () => {
   });
 });
 
+describe("areaLabelPoint", () => {
+  it("does not move a room name when an extra vertex splits a straight wall", () => {
+    const rect = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 }];
+    const subdivided = [rect[0]!, { x: 3, y: 0 }, ...rect.slice(1)];
+    expect(areaLabelPoint(subdivided)).toEqual(areaLabelPoint(rect));
+    expect(polygonCentroid(subdivided)).not.toEqual(polygonCentroid(rect));
+  });
+
+  it("agrees with the vertex mean on a rectangle", () => {
+    const rect = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 }];
+    expect(areaLabelPoint(rect)).toEqual({ x: 5, y: 10 });
+  });
+
+  it("centres on the floor of an L-shaped room, not on its corners", () => {
+    // The kitchen that surfaced this: four of six vertices sit on the right,
+    // so the vertex mean lands at x=300 — outside the room's visual middle.
+    const kitchen = [
+      { x: 80, y: 120 }, { x: 460, y: 120 }, { x: 460, y: 260 },
+      { x: 360, y: 260 }, { x: 360, y: 420 }, { x: 80, y: 420 },
+    ];
+    const p = areaLabelPoint(kitchen);
+    expect(p.x).toBeCloseTo(247.1, 1);
+    expect(p.y).toBeCloseTo(258.6, 1);
+    expect(polygonCentroid(kitchen).x).toBe(300);
+  });
+
+  it("does not care which way the polygon winds", () => {
+    const cw = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }, { x: 0, y: 20 }];
+    expect(areaLabelPoint([...cw].reverse())).toEqual(areaLabelPoint(cw));
+  });
+
+  it("falls back to the vertex mean when the centroid escapes a U-shaped room", () => {
+    // Centre of mass sits in the notch between the arms, outside the polygon.
+    const u = [
+      { x: 0, y: 0 }, { x: 30, y: 0 }, { x: 30, y: 30 }, { x: 20, y: 30 },
+      { x: 20, y: 10 }, { x: 10, y: 10 }, { x: 10, y: 30 }, { x: 0, y: 30 },
+    ];
+    expect(areaLabelPoint(u)).toEqual(polygonCentroid(u));
+  });
+
+  it("falls back for a polygon with no area", () => {
+    const line = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 20, y: 0 }];
+    expect(areaLabelPoint(line)).toEqual({ x: 10, y: 0 });
+    expect(areaLabelPoint([])).toEqual({ x: 0, y: 0 });
+  });
+});
+
 describe("areaZoomTransform", () => {
   it("returns the identity transform for an empty polygon", () => {
     expect(areaZoomTransform([], 100, 100, 0)).toEqual(IDENTITY_ZOOM);
@@ -6700,5 +6752,73 @@ describe("floorSwitcherAnchor — what Number() would have let through (issue #2
     // corner of the canvas is a legitimate place to put it.
     expect(floorSwitcherAnchor({ floorSwitcher: { x: 0, y: 0 } })).toEqual({ x: 0, y: 0 });
     expect(floorSwitcherAnchor({ floorSwitcher: { x: "0", y: "0" } as never })).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("railings (issue #182)", () => {
+  const wall = (id: string, x1: number, y1: number, x2: number, y2: number): Wall => ({
+    id,
+    x1,
+    y1,
+    x2,
+    y2,
+  });
+  const railing = (id: string, x1: number, y1: number, x2: number, y2: number): Wall => ({
+    ...wall(id, x1, y1, x2, y2),
+    kind: "railing",
+  });
+
+  it("is a railing only when it says so", () => {
+    expect(isRailing(wall("w", 0, 0, 1, 0))).toBe(false);
+    expect(isRailing({ kind: "wall" })).toBe(false);
+    expect(isRailing({ kind: "railing" })).toBe(true);
+  });
+
+  it("drops railings from the walls that block, keeping array identity for the caches", () => {
+    const plain = [wall("a", 0, 0, 100, 0), wall("b", 100, 0, 100, 100)];
+    // No railing: the very same array, so deadSpacesCached still hits.
+    expect(wallsThatBlock(plain)).toBe(plain);
+    const mixed = [...plain, railing("r", 0, 100, 100, 100)];
+    const solid = wallsThatBlock(mixed);
+    expect(solid.map((w) => w.id)).toEqual(["a", "b"]);
+    // Same input, same output — not a fresh array on every state change.
+    expect(wallsThatBlock(mixed)).toBe(solid);
+  });
+
+  it("lets the sun reach a balcony door over the railing in front of it", () => {
+    // House wall along y=0 with a door in it; the balcony's railing runs 120
+    // units out, between the door and a sun shining straight in from +y.
+    const facade = wall("f", 0, 0, 400, 0);
+    const rail = railing("r", 100, 120, 300, 120);
+    const door = { x: 200, y: 0 };
+    const towardHouse = { x: 0, y: -1 };
+    // As a full-height wall it stands between the door and the sky.
+    expect(sunReachesOpening(door, [facade, { ...rail, kind: undefined }], towardHouse)).toBe(false);
+    expect(sunReachesOpening(door, wallsThatBlock([facade, rail]), towardHouse)).toBe(true);
+  });
+
+  it("does not clip a lamp's pool", () => {
+    const rail = railing("r", 0, 150, 400, 150);
+    expect(glowReach(200, 100, 200, [{ ...rail, kind: undefined }])).toBeDefined();
+    expect(glowReach(200, 100, 200, wallsThatBlock([rail]))).toBeUndefined();
+  });
+
+  it("seals off no dead space", () => {
+    // A balcony with no door onto it: three railings against the façade.
+    const walls = [
+      wall("f", 0, 0, 200, 0),
+      railing("r1", 200, 0, 200, 100),
+      railing("r2", 200, 100, 0, 100),
+      railing("r3", 0, 100, 0, 0),
+    ];
+    const asWalls = walls.map((w) => ({ ...w, kind: undefined }));
+    expect(deadSpaces(asWalls, [])).toHaveLength(1);
+    expect(deadSpaces(wallsThatBlock(walls), [])).toHaveLength(0);
+  });
+
+  it("draws an explicit thickness thinner, and leaves the skin's weight to CSS", () => {
+    expect(wallStrokeStyle(undefined, "railing")).toBe("");
+    expect(wallStrokeStyle(5, "railing")).toBe(`stroke-width:${5 * RAILING_WEIGHT};`);
+    expect(wallStrokeStyle(5, "wall")).toBe("stroke-width:5;");
   });
 });

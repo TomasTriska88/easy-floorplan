@@ -1888,6 +1888,18 @@ export function wallForm(w: Wall): FormSpec {
           number: { min: 2, max: MAX_SKIN_WALL_WIDTH, step: 1, mode: "slider", unit_of_measurement: "px" },
         },
       },
+      // Issue #182. A dropdown rather than a switch: a railing is one kind of
+      // line that is not a wall, and open-plan dividers are the next one asked
+      // about (#288).
+      {
+        name: "kind",
+        label: "Kind",
+        helper:
+          (w.kind ?? "wall") === "railing"
+            ? "Drawn thin; lamp light and sunlight carry on over it, and it seals off no dead space"
+            : "A railing is the low edge of a balcony, terrace or gallery",
+        selector: dropdown(opt("wall", "Wall"), opt("railing", "Railing")),
+      },
     ],
     data: {
       x1: Math.round(w.x1),
@@ -1895,10 +1907,15 @@ export function wallForm(w: Wall): FormSpec {
       x2: Math.round(w.x2),
       y2: Math.round(w.y2),
       thickness: w.thickness ?? WALL_THICKNESS,
+      kind: w.kind ?? "wall",
     },
-    // Keep the default out of the YAML so untouched walls stay terse.
-    toPatch: (p) =>
-      "thickness" in p && p.thickness === WALL_THICKNESS ? { ...p, thickness: undefined } : p,
+    // Keep the defaults out of the YAML so untouched walls stay terse.
+    toPatch: (p) => {
+      const out = { ...p };
+      if ("thickness" in p && p.thickness === WALL_THICKNESS) out.thickness = undefined;
+      if ("kind" in p) out.kind = p.kind === "railing" ? "railing" : undefined;
+      return out;
+    },
   };
 }
 

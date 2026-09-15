@@ -26,6 +26,7 @@ import type {
   Area,
   AreaPoint,
   Wall,
+  WallKind,
   RenderHass,
   HassEntity,
   FloorItem,
@@ -1582,8 +1583,46 @@ export function wallThickness(v: unknown): number {
  * untouched wall keeps following the skin and an explicit thickness
  * overrides it.
  */
-export function wallStrokeStyle(thickness: unknown): string {
-  return thickness === undefined ? "" : `stroke-width:${wallThickness(thickness)};`;
+export function wallStrokeStyle(thickness: unknown, kind?: WallKind): string {
+  if (thickness === undefined) return "";
+  const weight = wallThickness(thickness);
+  return kind === "railing"
+    ? `stroke-width:${Math.round(weight * RAILING_WEIGHT * 100) / 100};`
+    : `stroke-width:${weight};`;
+}
+
+/**
+ * A railing's stroke as a share of the wall weight it would otherwise have
+ * (issue #182) — thin enough to read as a barrier rather than structure next
+ * to the walls around it. The card's and the editor's `.wall.railing` rule
+ * applies the same share to a skin's weight.
+ */
+export const RAILING_WEIGHT = 0.4;
+
+/** Whether a wall is a railing rather than a full-height wall (issue #182). */
+export function isRailing(w: Pick<Wall, "kind">): boolean {
+  return w.kind === "railing";
+}
+
+const blockingWallsMemo = new WeakMap<readonly Wall[], Wall[]>();
+
+/**
+ * The walls that stand in the way of light and seal off space: all of them but
+ * the railings (issue #182).
+ *
+ * Hands back the **same array** when there are no railings, and the same
+ * filtered array for the same input after that. Both matter: the dead-space
+ * cache and `wallsLightPassesThrough`'s callers key on array identity, and this
+ * runs on every state change the card takes.
+ */
+export function wallsThatBlock(walls: readonly Wall[]): Wall[] {
+  if (!walls.some(isRailing)) return walls as Wall[];
+  let hit = blockingWallsMemo.get(walls);
+  if (!hit) {
+    hit = walls.filter((w) => !isRailing(w));
+    blockingWallsMemo.set(walls, hit);
+  }
+  return hit;
 }
 
 // ---- overlay scaling --------------------------------------------------------
@@ -4868,13 +4907,51 @@ export function renderWallMask(
 /**
  * Arithmetic-mean centroid of a polygon's vertices. Not an exact
  * center-of-mass for a non-convex shape, but that precision isn't needed
- * here — it's only used for name-label placement and marquee/click
+ * here — it's only used for approximate editor positions and marquee/click
  * hit-testing (see `elementsInRect` in editor-geometry.ts).
  */
 export function polygonCentroid(points: readonly AreaPoint[]): { x: number; y: number } {
   if (!points.length) return { x: 0, y: 0 };
   const sum = points.reduce((s, p) => ({ x: s.x + p.x, y: s.y + p.y }), { x: 0, y: 0 });
   return { x: sum.x / points.length, y: sum.y / points.length };
+}
+
+/**
+ * Area-weighted centroid — the polygon's centre of *mass* by the shoelace
+ * formula — or undefined when the polygon encloses no area (fewer than three
+ * points, or all of them collinear), where the quantity is not defined.
+ *
+ * Winding does not matter: signed area appears in both the numerator and the
+ * denominator, so a clockwise polygon and its counter-clockwise twin return
+ * the same point.
+ */
+function polygonAreaCentroid(points: readonly AreaPoint[]): { x: number; y: number } | undefined {
+  if (points.length < 3) return undefined;
+  let twiceArea = 0;
+  let x = 0;
+  let y = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const pi = points[i]!;
+    const pj = points[j]!;
+    const cross = pj.x * pi.y - pi.x * pj.y;
+    twiceArea += cross;
+    x += (pj.x + pi.x) * cross;
+    y += (pj.y + pi.y) * cross;
+  }
+  if (twiceArea === 0) return undefined;
+  return { x: x / (3 * twiceArea), y: y / (3 * twiceArea) };
+}
+
+/**
+ * Centre room labels by floor area, rather than the number of vertices on each
+ * side. Keep the previous placement when the area centroid is outside a concave
+ * room or the polygon has no area. This fallback does not guarantee an interior
+ * label for every concave polygon.
+ */
+export function areaLabelPoint(points: readonly AreaPoint[]): { x: number; y: number } {
+  const centroid = polygonAreaCentroid(points);
+  if (centroid && pointInPolygon(points, centroid.x, centroid.y)) return centroid;
+  return polygonCentroid(points);
 }
 
 /** Neutral (unzoomed) result of {@link areaZoomTransform} — identity view. */
