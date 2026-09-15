@@ -12,7 +12,6 @@ import {
   DEFAULT_PRESS_EFFECT,
   DEFAULT_OFFLINE_STYLE,
   BADGE_MIN_LIGHTNESS,
-  FURNITURE_GLOW_TRANSMISSION,
   SUN_ELEVATION_NIGHT,
   SUN_ELEVATION_DAY,
 } from "./types";
@@ -157,7 +156,6 @@ import {
   MIN_SASH_SPAN,
   glowClearSpan,
   glowClearFraction,
-  renderGlowMask,
   renderOpening,
   renderGlow,
   renderRipple,
@@ -168,7 +166,7 @@ import {
 import { buildRenderHass } from "./replay-history/render-state-service";
 import type { FloorplanCardConfig, Opening, RenderHass, Wall } from "./types";
 import { deadSpaces } from "./dead-space";
-import { symbolCatalog, symbolSize } from "./symbols";
+import { symbolSize } from "./symbols";
 
 /**
  * Render a Lit template to the string it would emit, for asserting on markup.
