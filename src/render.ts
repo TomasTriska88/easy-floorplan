@@ -4743,7 +4743,10 @@ export function skylightPatchCenter(
  * disagree about where the light is.
  */
 export function skylightPatchPolygon(
-  o: Pick<Opening, "type" | "x" | "y" | "length" | "width" | "angle" | "ceilingHeight">,
+  o: Pick<
+    Opening,
+    "type" | "x" | "y" | "length" | "width" | "angle" | "flipV" | "ceilingHeight"
+  >,
   dir: { x: number; y: number },
   drop: number,
   clear = 1,

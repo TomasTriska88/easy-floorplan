@@ -58,6 +58,27 @@ describe("ambient daylight prototype", () => {
     expect(ambientOpeningSources([left, right], [innerDoor])).toEqual([]);
   });
 
+  it("does not yet see a skylight, and says so on purpose", () => {
+    // A roof light sits *inside* a room rather than on its boundary, so it
+    // touches no Area edge and falls out of the same rule an opening touching
+    // none does. That is a gap rather than a decision — a skylight sees more
+    // sky than any wall window, so it is the strongest ambient source a room
+    // could have — but every source here is a point on a wall with an inward
+    // normal and a length, and a roof light has no inward direction: it lights
+    // the room from above in all of them.
+    //
+    // Pinned so the contract is stated rather than implied. When this layer
+    // grows geometry for an overhead source, this test is the one that should
+    // fail and be rewritten (issue #285 review).
+    const room = rect("living", 0, 0, 400, 300);
+    const velux = opening("sk", 200, 150, { type: "skylight", width: 60 });
+    expect(ambientOpeningSources([room], [velux])).toEqual([]);
+    // …and it is the placement doing it, not the type: the same roof light
+    // dragged onto the room's edge would be found, which is why the rule needs
+    // saying out loud rather than being left to look deliberate.
+    expect(ambientOpeningSources([room], [{ ...velux, y: 0 }]).length).toBe(1);
+  });
+
   it("brightens a room through a north-side window without any sun-bearing input", () => {
     const room = rect("bedroom", 0, 0, 400, 300);
     const win = opening("north-window", 200, 0);

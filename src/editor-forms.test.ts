@@ -2071,7 +2071,20 @@ describe("areaForm — actions on rooms (issue #181)", () => {
 // each form can produce appears in exactly one of them.
 describe("every field lands in exactly one panel group", () => {
   const OPENING_GROUPS = [
-    ["type", "motion", "length", "sash", "sashSpan", "hinge", "opens", "slide", "style", "angle"],
+    [
+      "type",
+      "motion",
+      "length",
+      "width",
+      "ceilingHeight",
+      "sash",
+      "sashSpan",
+      "hinge",
+      "opens",
+      "slide",
+      "style",
+      "angle",
+    ],
     ["entity", "secondaryEntity", "invert"],
     ["glazed", "sunlight"],
     [
@@ -2124,6 +2137,13 @@ describe("every field lands in exactly one panel group", () => {
       { shutterEntity: "cover.s", shutterStyle: "roll", entity: "binary_sensor.a" },
       { entity: "binary_sensor.a", showIcon: true },
       { shutterEntity: "binary_sensor.s", showShutterIcon: true },
+      // The roof light, which is the only shape offering `width` and
+      // `ceilingHeight` — so without it here those two names sit in the group
+      // table unchecked, and could be dropped or misspelled with nothing
+      // failing while the controls quietly stopped rendering.
+      { type: "skylight", width: 60 },
+      { type: "skylight", width: 60, entity: "cover.velux" },
+      { type: "skylight", width: 60, shutterEntity: "cover.blind", entity: "cover.velux" },
     ]) {
       check(openingForm({ ...base, ...extra } as Opening).fields, OPENING_GROUPS, JSON.stringify(extra));
     }
