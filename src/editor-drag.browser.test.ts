@@ -76,9 +76,18 @@ function frame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function center(el: Element): { x: number; y: number } {
   const r = el.getBoundingClientRect();
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+function screenPoint(svg: SVGSVGElement, x: number, y: number): { x: number; y: number } {
+  const ctm = svg.getScreenCTM()!;
+  return { x: ctm.e + ctm.a * x, y: ctm.f + ctm.d * y };
 }
 
 async function mountEditor() {
@@ -199,6 +208,91 @@ describe("editor drag", () => {
     const pos = itemPosition(t.emitted[0]);
     expect(pos.x).toBeCloseTo(ITEM_START.x + 50 / ctm.a, 0);
     expect(pos.y).toBeCloseTo(ITEM_START.y + 40 / ctm.d, 0);
+  });
+
+  it("keeps a click on Area as a polygon vertex", async () => {
+    const t = await mountEditor();
+    t.ed.shadowRoot!.querySelector<HTMLButtonElement>('button[title="Area"]')!.click();
+    await t.ed.updateComplete;
+
+    const first = screenPoint(t.svg, 100, 100);
+    pointer(t.svg, "pointerdown", first.x, first.y);
+    pointer(t.svg, "pointerup", first.x, first.y);
+    await t.ed.updateComplete;
+
+    expect((t.ed as any)._floor().areas).toEqual([]);
+    expect((t.ed as any)._draftArea.points[0].x).toBeCloseTo(100);
+    expect((t.ed as any)._draftArea.points[0].y).toBeCloseTo(100);
+  });
+
+  it("shows the polygon edge from the last point to the moving cursor", async () => {
+    const t = await mountEditor();
+    t.ed.shadowRoot!.querySelector<HTMLButtonElement>('button[title="Area"]')!.click();
+    await t.ed.updateComplete;
+
+    const first = screenPoint(t.svg, 100, 100);
+    const cursor = screenPoint(t.svg, 180, 140);
+    pointer(t.svg, "pointerdown", first.x, first.y);
+    pointer(t.svg, "pointerup", first.x, first.y);
+    pointer(t.svg, "pointermove", cursor.x, cursor.y);
+    await t.ed.updateComplete;
+
+    expect(t.ed.shadowRoot!.querySelector(".area-draft-hover")).not.toBeNull();
+  });
+
+  it("stays in polygon mode when dragging after the first Area click", async () => {
+    const t = await mountEditor();
+    t.ed.shadowRoot!.querySelector<HTMLButtonElement>('button[title="Area"]')!.click();
+    await t.ed.updateComplete;
+
+    const first = screenPoint(t.svg, 100, 100);
+    const second = screenPoint(t.svg, 240, 220);
+    pointer(t.svg, "pointerdown", first.x, first.y);
+    pointer(t.svg, "pointerup", first.x, first.y);
+    pointer(t.svg, "pointerdown", second.x, second.y);
+    pointer(t.svg, "pointermove", second.x + 80, second.y + 80);
+    await delay(220);
+    pointer(t.svg, "pointerup", second.x + 80, second.y + 80);
+    await t.ed.updateComplete;
+
+    expect((t.ed as any)._floor().areas).toEqual([]);
+    expect((t.ed as any)._draftArea.points).toHaveLength(2);
+    expect((t.ed as any)._tool).toBe("area");
+  });
+
+  it("turns an Area press-drag into a rectangle instead of a polygon point", async () => {
+    const t = await mountEditor();
+    t.ed.shadowRoot!.querySelector<HTMLButtonElement>('button[title="Area"]')!.click();
+    await t.ed.updateComplete;
+
+    const start = screenPoint(t.svg, 100, 100);
+    const end = screenPoint(t.svg, 240, 220);
+    pointer(t.svg, "pointerdown", start.x, start.y);
+    pointer(t.svg, "pointermove", end.x, end.y);
+    await frame();
+    await t.ed.updateComplete;
+    expect((t.ed as any)._draftArea).toBeNull();
+    await delay(220);
+    await t.ed.updateComplete;
+    expect((t.ed as any)._draftArea).not.toBeNull();
+    const final = screenPoint(t.svg, 260, 240);
+    pointer(t.svg, "pointermove", final.x, final.y);
+    await t.ed.updateComplete;
+    pointer(t.svg, "pointerup", final.x, final.y);
+    await t.ed.updateComplete;
+
+    const points = (t.ed as any)._floor().areas[0].points;
+    expect(points).toHaveLength(4);
+    expect(points[0].x).toBeCloseTo(100);
+    expect(points[0].y).toBeCloseTo(100);
+    expect(points[1].x).toBeCloseTo(260);
+    expect(points[1].y).toBeCloseTo(100);
+    expect(points[2].x).toBeCloseTo(260);
+    expect(points[2].y).toBeCloseTo(240);
+    expect(points[3].x).toBeCloseTo(100);
+    expect(points[3].y).toBeCloseTo(240);
+    expect((t.ed as any)._draftArea).toBeNull();
+    expect((t.ed as any)._tool).toBe("select");
   });
 
   it("drags and toggles a selected area's edge segment away from the endpoints", async () => {

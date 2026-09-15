@@ -219,7 +219,7 @@ import {
 const formLabel = (s: FormField): string => s.label;
 const formHelper = (s: FormField): string | undefined => s.helper;
 
-type Tool = "select" | "wall" | "door" | "window" | "tracker" | "area" | "area-rectangle";
+type Tool = "select" | "wall" | "door" | "window" | "tracker" | "area";
 type OverlaySel = { kind: "item" | "text"; id: string };
 
 /** Toolbar metadata per tool: mdi icon + label (icons make the modes scannable). */
@@ -230,7 +230,6 @@ const TOOL_META: Record<Tool, { icon: string; label: string }> = {
   window: { icon: "mdi:window-closed-variant", label: "Window" },
   tracker: { icon: "mdi:crosshairs-gps", label: "Tracker" },
   area: { icon: "mdi:vector-polygon", label: "Area" },
-  "area-rectangle": { icon: "mdi:rectangle-outline", label: "Rectangle" },
 };
 
 /**
@@ -254,6 +253,7 @@ const switcherHandleHome = (w: number, h: number) => ({ x: w * 0.93, y: h * 0.08
  * drag for the switcher.
  */
 const DRAG_SLOP = 4;
+const AREA_DRAG_HOLD_MS = 200;
 
 /** Icon shown in the Element header per selected element kind. */
 const SEL_KIND_ICON: Record<SelKind, string> = {
@@ -399,10 +399,14 @@ export class FloorplanCardEditor extends LitElement {
    * Closed by clicking back on `points[0]` once at least 3 points are placed.
    */
   @state() private _draftArea: { points: AreaPoint[] } | null = null;
-  /** Live cursor position while drawing an Area, for the rubber-band preview segment. */
+  /** Live cursor position while continuing a polygon draft. */
   @state() private _areaHover: AreaPoint | null = null;
-  /** Anchor point while drawing a rectangle room with the area-rectangle tool. */
+  /** Anchor point for the current Area-tool gesture. */
   @state() private _areaDragStart: { x: number; y: number } | null = null;
+  private _areaDragCurrent: AreaPoint | null = null;
+  private _areaDragTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True once the Area gesture has been held after movement for 200 ms. */
+  @state() private _areaDragMoved = false;
   /** When true, walls are drawn freely (no horizontal/vertical or corner gravity). */
   @state() private _freeWalls = false;
   /** Default length applied to a freshly placed door/window. User-editable from the context bar. */
@@ -1379,28 +1383,15 @@ export class FloorplanCardEditor extends LitElement {
       return;
     }
     if (this._tool === "area") {
-      // Discrete clicks, like door/window — no drag capture/gesture pointer.
       const pt = this._snapAreaPoint(raw.x, raw.y);
-      if (!this._draftArea) {
-        this._draftArea = { points: [pt] };
+      if (this._draftArea) {
+        this._addAreaPoint(pt);
+        this._areaHover = null;
         return;
       }
-      const pts = this._draftArea.points;
-      const first = pts[0]!;
-      if (pts.length >= 3 && Math.hypot(pt.x - first.x, pt.y - first.y) <= ENDPOINT_SNAP) {
-        this._finishArea();
-        return;
-      }
-      const last = pts[pts.length - 1]!;
-      if (pt.x !== last.x || pt.y !== last.y) {
-        this._draftArea = { points: [...pts, pt] };
-      }
-      return;
-    }
-    if (this._tool === "area-rectangle") {
-      const pt = this._snapAreaPoint(raw.x, raw.y);
       this._areaDragStart = { x: pt.x, y: pt.y };
-      this._draftArea = { points: rectAreaPoints({ x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y }) };
+      this._areaDragCurrent = null;
+      this._areaDragMoved = false;
       this._gesturePointer = ev.pointerId;
       this._capturePointer(ev);
       return;
@@ -1432,7 +1423,10 @@ export class FloorplanCardEditor extends LitElement {
     this._draft = null;
     this._draftTracker = null;
     this._draftArea = null;
-    this._areaHover = null;
+    this._areaDragStart = null;
+    this._areaDragCurrent = null;
+    this._clearAreaDragTimer();
+    this._areaDragMoved = false;
     this._marquee = null;
     const drag = this._drag;
     this._drag = null;
@@ -1491,24 +1485,29 @@ export class FloorplanCardEditor extends LitElement {
       };
       return;
     }
+    if (this._tool === "area" && this._areaDragStart) {
+      const raw = this._toVirtual(ev, false);
+      const start = this._areaDragStart;
+      const current = { x: raw.x, y: raw.y };
+      this._areaDragCurrent = current;
+      if (this._areaDragMoved) {
+        this._updateAreaRectangleDraft(current);
+        return;
+      }
+      if (!this._areaDragMoved && this._areaDragTimer === null && (current.x !== start.x || current.y !== start.y)) {
+        this._areaDragTimer = setTimeout(() => {
+          this._areaDragTimer = null;
+          const target = this._areaDragCurrent;
+          if (!this._areaDragStart || !target || (target.x === start.x && target.y === start.y)) return;
+          this._areaDragMoved = true;
+          this._updateAreaRectangleDraft(target);
+        }, AREA_DRAG_HOLD_MS);
+      }
+      return;
+    }
     if (this._tool === "area" && this._draftArea) {
       const raw = this._toVirtual(ev, false);
       this._areaHover = this._snapAreaPoint(raw.x, raw.y);
-      return;
-    }
-    if (this._tool === "area-rectangle" && this._draftArea) {
-      const raw = this._toVirtual(ev, false);
-      const start = this._areaDragStart;
-      if (start) {
-        const target = { x: this._snap(raw.x), y: this._snap(raw.y) };
-        const points = rectAreaClamp(
-          rectAreaPoints({ x0: start.x, y0: start.y, x1: target.x, y1: target.y }),
-          this._floor().areas ?? [],
-          { dx: target.x - start.x, dy: target.y - start.y }
-        );
-        this._draftArea = { points };
-      }
-      this._areaHover = null;
       return;
     }
     if (this._marquee) {
@@ -1550,22 +1549,31 @@ export class FloorplanCardEditor extends LitElement {
       }
       return;
     }
-    if (this._tool === "area-rectangle" && this._draftArea) {
-      const d = this._draftArea;
-      const width = Math.abs(d.points[1]!.x - d.points[0]!.x);
-      const height = Math.abs(d.points[3]!.y - d.points[0]!.y);
-      if (width > 0 && height > 0) {
-        const points = rectAreaClamp(d.points, this._floor().areas ?? [], { dx: 0, dy: 0 });
-        const rect: Area = { id: uid("area"), points, showName: true };
-        this._commitFloor({ areas: [...(this._floor().areas ?? []), rect] });
-        this._selection = [{ kind: "area", id: rect.id }];
-      }
-      this._draftArea = null;
-      this._areaHover = null;
+    if (this._tool === "area" && this._areaDragStart) {
+      const start = this._areaDragStart;
+      const wasDrag = this._areaDragMoved;
+      const draft = this._draftArea;
+      this._clearAreaDragTimer();
       this._areaDragStart = null;
-      this._gesturePointer = null;
+      this._areaDragCurrent = null;
+      this._areaDragMoved = false;
       this._releasePointer(ev);
-      this._tool = "select";
+
+      if (wasDrag && draft) {
+        const width = Math.abs(draft.points[1]!.x - draft.points[0]!.x);
+        const height = Math.abs(draft.points[3]!.y - draft.points[0]!.y);
+        if (width > 0 && height > 0) {
+          const points = rectAreaClamp(draft.points, this._floor().areas ?? [], { dx: 0, dy: 0 });
+          const rect: Area = { id: uid("area"), points, showName: true };
+          this._commitFloor({ areas: [...(this._floor().areas ?? []), rect] });
+          this._selection = [{ kind: "area", id: rect.id }];
+          this._tool = "select";
+        }
+        this._draftArea = null;
+        return;
+      }
+
+      this._addAreaPoint(start);
       return;
     }
     if (this._marquee) {
@@ -2091,6 +2099,43 @@ export class FloorplanCardEditor extends LitElement {
     this._draftArea = null;
     this._areaHover = null;
     this._tool = "select";
+  }
+
+  private _clearAreaDragTimer(): void {
+    if (this._areaDragTimer === null) return;
+    clearTimeout(this._areaDragTimer);
+    this._areaDragTimer = null;
+  }
+
+  private _updateAreaRectangleDraft(target: AreaPoint): void {
+    const start = this._areaDragStart;
+    if (!start) return;
+    const snapped = { x: this._snap(target.x), y: this._snap(target.y) };
+    this._draftArea = {
+      points: rectAreaClamp(
+        rectAreaPoints({ x0: start.x, y0: start.y, x1: snapped.x, y1: snapped.y }),
+        this._floor().areas ?? [],
+        { dx: snapped.x - start.x, dy: snapped.y - start.y }
+      ),
+    };
+  }
+
+  /** Add one polygon vertex, or close the draft when clicking its start. */
+  private _addAreaPoint(pt: AreaPoint): void {
+    if (!this._draftArea) {
+      this._draftArea = { points: [pt] };
+      return;
+    }
+    const pts = this._draftArea.points;
+    const first = pts[0]!;
+    if (pts.length >= 3 && Math.hypot(pt.x - first.x, pt.y - first.y) <= ENDPOINT_SNAP) {
+      this._finishArea();
+      return;
+    }
+    const last = pts[pts.length - 1]!;
+    if (pt.x !== last.x || pt.y !== last.y) {
+      this._draftArea = { points: [...pts, pt] };
+    }
   }
 
   private _addText(): void {
@@ -3305,11 +3350,6 @@ export class FloorplanCardEditor extends LitElement {
               : `${n} points placed — click the first point to close the room, or keep adding.`}
         </span>
       `;
-    } else if (t === "area-rectangle") {
-      label = "Rectangle";
-      body = html`
-        <span class="ctx-hint">Drag to draw a snapped room rectangle.</span>
-      `;
     } else if (t === "door" || t === "window") {
       label = t === "door" ? "Door" : "Window";
       // Length input here so the user can size openings BEFORE placing them
@@ -3493,7 +3533,7 @@ export class FloorplanCardEditor extends LitElement {
         <div class="toolbar">
           <!-- Tools — modes; exactly one is active at a time -->
           <div class="seg" role="group" aria-label="Tool">
-            ${(["select", "wall", "door", "window", "tracker", "area", "area-rectangle"] as Tool[]).map(
+            ${(["select", "wall", "door", "window", "tracker", "area"] as Tool[]).map(
               (t) => html`
                 <button
                   class=${this._tool === t ? "active" : ""}
@@ -3506,6 +3546,9 @@ export class FloorplanCardEditor extends LitElement {
                     this._draftArea = null;
                     this._areaHover = null;
                     this._areaDragStart = null;
+                    this._areaDragCurrent = null;
+                    this._clearAreaDragTimer();
+                    this._areaDragMoved = false;
                   }}
                 >
                   <ha-icon icon=${TOOL_META[t].icon}></ha-icon>${TOOL_META[t].label}
@@ -4738,11 +4781,10 @@ export class FloorplanCardEditor extends LitElement {
   }
 
   /**
-   * The in-progress Area draft: committed vertices as dots, straight segments
-   * between them, and — while a live pointer position is known — a dashed
-   * "rubber band" segment from the last vertex to the cursor. Once 3+ points
-   * are down the starting vertex is drawn larger/hollow so it's visually
-   * obvious that clicking it closes the polygon (see `_onCanvasDown`).
+  * The in-progress Area draft: committed vertices as dots and straight
+  * segments between them. Once 3+ points are down the starting vertex is
+  * drawn larger/hollow so it's visually obvious that clicking it closes the
+  * polygon (see `_onCanvasDown`).
    */
   private _renderAreaDraft(): TemplateResult | typeof nothing {
     const draft = this._draftArea;
@@ -6611,8 +6653,7 @@ export class FloorplanCardEditor extends LitElement {
     svg.door,
     svg.window,
     svg.tracker,
-    svg.area,
-    svg.area-rectangle {
+    svg.area {
       cursor: crosshair;
     }
     .grid {
