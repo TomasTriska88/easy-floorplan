@@ -63,6 +63,7 @@ import {
   offlineStyleOf,
   sliderStyleOf,
   shutterStyleOf,
+  shutterMarkDefault,
   DEFAULT_SUN_BEARING,
   SUN_REACH,
   openingSash,
@@ -471,23 +472,24 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
       });
     }
   }
-  // With both bound, which one a press leads with. Only a real question when
-  // there are two entities to choose between — and the reason it exists: the
-  // shutter used to be reachable by hold alone, which is not discoverable and
-  // is awkward on a wall tablet.
-  if (o.entity && o.shutterEntity) {
-    // The badge that makes the second entity visible. On by default; the
-    // switch is for a plan where every window has one and they start to shout.
+  if (o.shutterEntity) {
+    // The shutter's badge. With the opening bound too it is what makes the
+    // second entity visible, so it starts on and the switch is for a plan where
+    // every window has one and they start to shout. With the shutter alone it
+    // starts off, and is sold the way the opening's own badge is (issue #293).
     fields.push({
       name: "showShutterIcon",
       label: "Shutter icon",
-      helper: "Shows the shutter's state beside the opening, and opens it when tapped",
+      helper:
+        !o.entity && shutterStyleOf(o) === "roll"
+          ? "A raised roll-up leaves only a line — this puts the shutter's state beside it, and opens it when tapped"
+          : "Shows the shutter's state beside the opening, and opens it when tapped",
       selector: { boolean: {} },
     });
     // Only worth asking once the badge is actually drawn. Left empty the badge
     // follows the entity, whose default glyph changes with the state — an
     // override is one glyph for both, which is why it is not the default.
-    if (o.showShutterIcon ?? true) {
+    if (o.showShutterIcon ?? shutterMarkDefault(o)) {
       fields.push({
         name: "shutterIcon",
         label: "Icon",
@@ -495,6 +497,12 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         selector: { icon: {} },
       });
     }
+  }
+  // With both bound, which one a press leads with. Only a real question when
+  // there are two entities to choose between — and the reason it exists: the
+  // shutter used to be reachable by hold alone, which is not discoverable and
+  // is awkward on a wall tablet.
+  if (o.entity && o.shutterEntity) {
     fields.push({
       name: "tapTarget",
       label: "Tap opens",
@@ -559,7 +567,7 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
       shutterStyle: shutterStyleOf(o),
       shutterSide: o.shutterFlipV ? "near" : "far",
       shutterInvert: o.shutterInvert ?? false,
-      showShutterIcon: o.showShutterIcon ?? true,
+      showShutterIcon: o.showShutterIcon ?? shutterMarkDefault(o),
       shutterIcon: o.shutterIcon ?? "",
       showIcon: o.showIcon ?? false,
       icon: o.icon ?? "",
@@ -613,8 +621,9 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         else if (k === "shutterInvert") out.shutterInvert = v || undefined;
         // The opening is the default, so it stays out of the YAML.
         else if (k === "tapTarget") out.tapTarget = v === "shutter" ? "shutter" : undefined;
-        // Shown is the default: only "off" is worth writing down.
-        else if (k === "showShutterIcon") out.showShutterIcon = v ? undefined : false;
+        // showShutterIcon is settled after the loop, against the entity this
+        // patch leaves behind rather than the one it found.
+        else if (k === "showShutterIcon") continue;
         // The opening's badge defaults the other way round, so only "on" is.
         // Switching it off takes the glyph with it: kept, it would silently
         // reapply the next time someone turned the badge back on.
@@ -676,6 +685,31 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
         }
         else if (k === "invert") out.invert = v || undefined;
         else out[k] = v;
+      }
+      // Only the answer that differs from the default is worth writing down —
+      // "off" beside a bound opening, "on" for a shutter alone (issue #293) —
+      // and the default follows the opening's entity. So it is judged against
+      // the entity after this patch, and binding or clearing that entity
+      // drops a stored answer that has just become the default: a shutter-only
+      // `true` once a window contact is bound, a `false` once it is cleared.
+      // A cleared shutter has already taken the switch with it, above.
+      //
+      // A badge this patch leaves hidden takes its glyph override too, the way
+      // Show icon takes `icon`: the field disappears with the badge, and a kept
+      // override would silently reapply the next time it was switched on. That
+      // covers the switch turned off and, since the default moves with the
+      // entity, a contact cleared from under a badge that was only on by default.
+      if (!("shutterEntity" in patch && !patch.shutterEntity)) {
+        const after = { entity: "entity" in out ? (out.entity as string | undefined) : o.entity };
+        const byDefault = shutterMarkDefault(after);
+        if ("showShutterIcon" in patch) {
+          const v = !!patch.showShutterIcon;
+          out.showShutterIcon = v === byDefault ? undefined : v;
+          if (!v) out.shutterIcon = undefined;
+        } else if ("entity" in out) {
+          if (o.showShutterIcon === byDefault) out.showShutterIcon = undefined;
+          if (o.shutterIcon && !(o.showShutterIcon ?? byDefault)) out.shutterIcon = undefined;
+        }
       }
       return out;
     },

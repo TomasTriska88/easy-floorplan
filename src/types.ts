@@ -392,11 +392,15 @@ export interface Opening {
    */
   icon?: string;
   /**
-   * Draw the shutter's icon beside the opening (default true, whenever both
-   * entities are bound). It is what makes the second entity visible at all —
-   * and a control of its own, since tapping it opens the shutter — but on a
-   * dense plan, or one where every window has a shutter, it is a lot of
-   * icons. Turning it off leaves the gestures untouched.
+   * Draw the shutter's icon beside the opening. Defaults to true when the
+   * opening's own entity is bound too: it is what makes the second entity
+   * visible at all — and a control of its own, since tapping it opens the
+   * shutter — but on a dense plan, or one where every window has a shutter, it
+   * is a lot of icons. Turning it off leaves the gestures untouched.
+   *
+   * Defaults to false with the shutter bound alone, where there is no second
+   * entity to reveal; `true` is for the raised roll-up that has left nothing on
+   * the plan but its track line (issue #293).
    */
   showShutterIcon?: boolean;
   /**
