@@ -1234,12 +1234,13 @@ export function renderFurnitureMask(
     // the return value fo findSymbol is a reference to a global value,
     // so it has to be copied before modification
     symbol = structuredClone(symbol);
+
+    symbol.parts = symbol.parts.map((p) => {
+        p.style.fillOpacity = overrideOp;
+        return p
+    })
   }
 
-  symbol.parts = symbol.parts.map((p) => {
-    p.style.fillOpacity = overrideOp ?? p.style.fillOpacity;
-    return p
-  })
 
   const parts = renderSymbolParts(symbol, f.w, f.h, color, overrideFill);
 
