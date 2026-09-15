@@ -693,13 +693,22 @@ export function openingForm(o: Opening, featuresOf: (entityId: string) => number
       // drops a stored answer that has just become the default: a shutter-only
       // `true` once a window contact is bound, a `false` once it is cleared.
       // A cleared shutter has already taken the switch with it, above.
+      //
+      // A badge this patch leaves hidden takes its glyph override too, the way
+      // Show icon takes `icon`: the field disappears with the badge, and a kept
+      // override would silently reapply the next time it was switched on. That
+      // covers the switch turned off and, since the default moves with the
+      // entity, a contact cleared from under a badge that was only on by default.
       if (!("shutterEntity" in patch && !patch.shutterEntity)) {
         const after = { entity: "entity" in out ? (out.entity as string | undefined) : o.entity };
+        const byDefault = shutterMarkDefault(after);
         if ("showShutterIcon" in patch) {
           const v = !!patch.showShutterIcon;
-          out.showShutterIcon = v === shutterMarkDefault(after) ? undefined : v;
-        } else if ("entity" in out && o.showShutterIcon === shutterMarkDefault(after)) {
-          out.showShutterIcon = undefined;
+          out.showShutterIcon = v === byDefault ? undefined : v;
+          if (!v) out.shutterIcon = undefined;
+        } else if ("entity" in out) {
+          if (o.showShutterIcon === byDefault) out.showShutterIcon = undefined;
+          if (o.shutterIcon && !(o.showShutterIcon ?? byDefault)) out.shutterIcon = undefined;
         }
       }
       return out;
