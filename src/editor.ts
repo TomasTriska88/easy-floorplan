@@ -172,6 +172,7 @@ import {
   rectAreaSharedEdgeCouple,
   rectAreaSharedSides,
   rectAreaSideWalls,
+  isRectArea,
   snapWallEnd,
   type AttachedCorner,
   type OrigPos,
@@ -595,6 +596,13 @@ export class FloorplanCardEditor extends LitElement {
     root.removeEventListener("pointerup", this._onSwitcherUp as EventListener, true);
     root.removeEventListener("pointercancel", this._onSwitcherCancel as EventListener, true);
     if (this._applyResetTimer !== null) clearTimeout(this._applyResetTimer);
+    // The area-drag timer is outside the main drag loop and can outlive the
+    // element if the editor is torn down mid-hold. Clear it here so a
+    // detached editor cannot keep mutating stale draft state after reconnect.
+    this._clearAreaDragTimer();
+    this._areaDragStart = null;
+    this._areaDragCurrent = null;
+    this._areaDragMoved = false;
     // HA's dialog reparents the editor, so this can land mid-drag. Removal
     // takes the pointer capture with it, so the gesture is over either way:
     // hand the host what the drag accumulated (_config is otherwise its only
@@ -1467,7 +1475,7 @@ export class FloorplanCardEditor extends LitElement {
     // the element chase the hovering mouse.
     if (
       ev.buttons === 0 &&
-      (this._drag || this._draft || this._draftTracker || this._marquee)
+      (this._drag || this._draft || this._draftTracker || this._marquee || this._areaDragStart)
     ) {
       this._cancelGesture();
       return;
@@ -1566,6 +1574,10 @@ export class FloorplanCardEditor extends LitElement {
         const height = Math.abs(draft.points[3]!.y - draft.points[0]!.y);
         if (width > 0 && height > 0) {
           const points = rectAreaClamp(draft.points, this._floor().areas ?? [], { dx: 0, dy: 0 });
+          if (!rectAreaHasMinimumSize(points) || (this._floor().areas ?? []).some((other) => this._rectAreasOverlap({ id: "draft-area", points, showName: true }, other))) {
+            this._draftArea = null;
+            return;
+          }
           const rect: Area = { id: uid("area"), points, showName: true };
           this._commitFloor({ areas: [...(this._floor().areas ?? []), rect] });
           this._selection = [{ kind: "area", id: rect.id }];
@@ -1741,6 +1753,7 @@ export class FloorplanCardEditor extends LitElement {
       // Every neighbor is compared with the same pre-drag boundary. This is
       // important when one long edge abuts two shorter edges: after the first
       // neighbor moves, the primary boundary is no longer at its old position.
+      if (other.locked) continue;
       const coupled = rectAreaSharedEdgeCouple(sharedReference, otherPoints, delta, movingSide);
       if (!coupled) continue;
       primaryPoints = coupled.points;
@@ -1871,11 +1884,33 @@ export class FloorplanCardEditor extends LitElement {
       const idx = drag.areaVertex;
       const target = this._snapAreaPoint(p.x, p.y, { areaId: drag.primary.id, vertexIndex: idx });
       const moving = (f.areas ?? []).find((a) => a.id === drag.primary.id)!;
-      let points = moving.points.length === 4
+      let points = isRectArea(moving.points)
         ? rectAreaVertexResize(moving.points, idx, target)
         : moving.points.map((pt, i) => (i === idx ? target : pt));
       const delta = { dx: target.x - moving.points[idx]!.x, dy: target.y - moving.points[idx]!.y };
-      const coupled = this._coupleRectAreaSharedEdges(drag.primary.id, points, delta, f.areas ?? []);
+      const vertexSides: RectAreaSide[] = isRectArea(moving.points)
+        ? idx === 0
+          ? ["top", "left"]
+          : idx === 1
+            ? ["top", "right"]
+            : idx === 2
+              ? ["bottom", "right"]
+              : ["bottom", "left"]
+        : [];
+      let coupled = { areas: f.areas ?? [], coupledIds: new Set<string>() };
+      for (const side of vertexSides) {
+        const next = this._coupleRectAreaSharedEdges(drag.primary.id, moving.points, delta, f.areas ?? [], side);
+        coupled = {
+          areas: next.areas,
+          coupledIds: new Set([...coupled.coupledIds, ...next.coupledIds]),
+        };
+      }
+      if (!rectAreaHasMinimumSize(points)) {
+        this._emitFloor({
+          areas: (f.areas ?? []).map((a) => (a.id === drag.primary.id ? { ...a, points: moving.points } : a)),
+        });
+        return;
+      }
       this._emitFloor({ areas: coupled.areas });
       return;
     }
@@ -1918,6 +1953,12 @@ export class FloorplanCardEditor extends LitElement {
         uncoupled,
         coupled.delta
       );
+      if (!rectAreaHasMinimumSize(points)) {
+        this._emitFloor({
+          areas: coupled.areas.map((a) => (a.id === drag.primary.id ? { ...a, points: moving.points } : a)),
+        });
+        return;
+      }
       this._emitFloor({
         areas: coupled.areas.map((a) => (a.id === drag.primary.id ? { ...a, points } : a)),
       });
@@ -2107,6 +2148,12 @@ export class FloorplanCardEditor extends LitElement {
     if (this._areaDragTimer === null) return;
     clearTimeout(this._areaDragTimer);
     this._areaDragTimer = null;
+  }
+
+  private _roomWallSegments(floor: Floor): Wall[] {
+    return (floor.areas ?? []).flatMap((area) =>
+      rectAreaSideWalls(area.id, area.points, area.sideWalls ?? {}).filter((wall) => !wall.divider)
+    );
   }
 
   private _updateAreaRectangleDraft(target: AreaPoint): void {
@@ -3467,6 +3514,8 @@ export class FloorplanCardEditor extends LitElement {
     const c = this._config;
     const floor = this._floor();
     const floors = c.floors ?? [];
+    const generatedWallSegments = this._roomWallSegments(floor);
+    const blockingWallSegments = wallsThatBlock([...floor.walls, ...generatedWallSegments]);
     const sideWallLookup = new Map<string, { area: Area; side: RectAreaSide; edgeIndex: number }>();
     for (const area of floor.areas ?? []) {
       for (const [edgeIndex, side] of RECT_AREA_SIDES.entries()) {
@@ -3488,14 +3537,14 @@ export class FloorplanCardEditor extends LitElement {
     // Dead spaces (issue #88) — derived from the walls and openings, so they
     // follow every edit without anything being stored.
     const deadSpaceRings = c.showDeadSpaces
-      ? deadSpacesCached(wallsThatBlock(floor.walls), floor.openings)
+      ? deadSpacesCached(blockingWallSegments, floor.openings)
       : [];
     // Walls as light meets them (issue #143), same as the card — so dropping a
     // door into a wall spills the pool through it while you are still drawing.
     // Skipped entirely on a floor with no cast light, which is most of them:
     // this sits on the path of every keystroke and drag in the editor.
     const lightWalls = floor.items.some((it) => it.glow)
-      ? wallsLightPassesThrough(wallsThatBlock(floor.walls), floor.openings, (o) => {
+      ? wallsLightPassesThrough(blockingWallSegments, floor.openings, (o) => {
           const amt = (id?: string) =>
             resolveOpeningAmount(o, id ? this.hass?.states[id] : undefined);
           // Same reading as the card, second leaf included (issue #145),
@@ -3513,7 +3562,7 @@ export class FloorplanCardEditor extends LitElement {
             o.shutterEntity ? shutterAmount(this.hass?.states[o.shutterEntity], o.shutterInvert) : undefined
           );
         })
-      : wallsThatBlock(floor.walls);
+      : blockingWallSegments;
     const floorEmpty =
       !floor.walls.length &&
       !floor.openings.length &&
@@ -3905,8 +3954,13 @@ export class FloorplanCardEditor extends LitElement {
               }
               ${floor.furniture.map((f) => this._renderFurnitureSel(f))}
               ${renderWallMask(floor.openings, c.width, c.height, this._wallMaskId)}
-              ${floor.walls.map((w) => this._renderWall(w))}
-              ${(floor.areas ?? []).flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {})).map((w) => this._renderWall(w, sideWallLookup.get(w.id)))}
+              ${(() => {
+                const renderWall = (
+                  w: Wall,
+                  sideWallInfo?: { area: Area; side: RectAreaSide; edgeIndex: number }
+                ) => this._renderWall(w, sideWallInfo);
+                return [...floor.walls, ...generatedWallSegments].map((w) => renderWall(w, sideWallLookup.get(w.id)));
+              })()}
               <!-- Room outlines, same layer position as the card so what you
                    place is what you get. Only a static borderColor draws here,
                    there being no hass to resolve a live color from — but the
@@ -4731,7 +4785,7 @@ export class FloorplanCardEditor extends LitElement {
                             @pointerdown=${(e: PointerEvent) =>
                               this._startDrag(e, { kind: "area", id: a.id }, undefined, i)} />`
                 ),
-                ...(a.points.length === 4
+                ...(isRectArea(a.points)
                   ? [
                       ...a.points.map((p, i) => {
                         const next = a.points[(i + 1) % a.points.length];

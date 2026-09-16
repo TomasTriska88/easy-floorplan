@@ -999,8 +999,13 @@ export class FloorplanCard extends LitElement {
     // Dead spaces (issue #88). Derived from the walls and openings, never
     // stored — and memoized on those two arrays, because this runs on every
     // hass update the card takes and the walls have moved on none of them.
+    const roomWallSegments = [
+      ...active.walls,
+      ...active.areas.flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {}).filter((w) => !w.divider)),
+    ];
+    const blockingWallSegments = wallsThatBlock(roomWallSegments);
     const deadSpaceRings = c.showDeadSpaces
-      ? deadSpacesCached(wallsThatBlock(active.walls), active.openings)
+      ? deadSpacesCached(blockingWallSegments, active.openings)
       : [];
     // Walls as light meets them (issue #143): open doors and windows are holes,
     // exactly as the plan draws them. Computed once here rather than inside
@@ -1012,7 +1017,7 @@ export class FloorplanCard extends LitElement {
     // state change the card takes.
     const castsLight = c.sunDimming || active.items.some((it) => it.glow);
     const lightWalls = castsLight
-      ? wallsLightPassesThrough(wallsThatBlock(active.walls), active.openings, (o) =>
+      ? wallsLightPassesThrough(blockingWallSegments, active.openings, (o) =>
           // Both leaves, and the travel each style actually has (issue #145):
           // asking `entity` alone left a door whose *second* panel was open
           // still blocking light outright. Glass admits it whole regardless
@@ -1026,7 +1031,7 @@ export class FloorplanCard extends LitElement {
             o.shutterEntity ? shutterAmount(renderHass?.states[o.shutterEntity], o.shutterInvert) : undefined
           )
         )
-      : wallsThatBlock(active.walls);
+      : blockingWallSegments;
     // Lit rooms hold back the night (issue #113): without this the flat dim
     // multiplies the lit-vs-unlit contrast too, and a lamp ends up *less*
     // visible after dark than at noon.
@@ -1385,7 +1390,7 @@ export class FloorplanCard extends LitElement {
                 : nothing
             }
             ${renderWallMask(active.openings, c.width, c.height, this._wallMaskId)}
-            ${[...active.walls, ...active.areas.flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {}))].map(
+            ${roomWallSegments.map(
                 (w) => svg`
                 <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
                       class="wall fp-wall ${isRailing(w) ? "railing" : ""}"
