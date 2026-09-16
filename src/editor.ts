@@ -69,6 +69,9 @@ import {
   renderGlow,
   resolveOpeningAmount,
   openingIsActive,
+  openingIsSkylight,
+  openingHitSize,
+  skylightWidth,
   wallsLightPassesThrough,
   wallsThatBlock,
   isRailing,
@@ -93,7 +96,7 @@ import {
   SHUTTER_MARK_SIZE,
   SHUTTER_MARK_ICON_SIZE,
   hasShutterMark,
-  openingFromDeviceClass,
+  openingDeviceClassPatch,
   renderRipple,
   renderFurniture,
   renderTracker,
@@ -129,6 +132,7 @@ import {
   hassRenderInputsChanged,
   wallStrokeStyle,
   normalizeOverlayScale,
+  normalizeOverlayMinWidth,
   overlayLength,
 } from "./render";
 import { deadSpacesCached } from "./dead-space";
@@ -207,7 +211,7 @@ import {
 const formLabel = (s: FormField): string => s.label;
 const formHelper = (s: FormField): string | undefined => s.helper;
 
-type Tool = "select" | "wall" | "door" | "window" | "tracker" | "area";
+type Tool = "select" | "wall" | "door" | "window" | "skylight" | "tracker" | "area";
 type OverlaySel = { kind: "item" | "text"; id: string };
 
 /** Toolbar metadata per tool: mdi icon + label (icons make the modes scannable). */
@@ -216,6 +220,10 @@ const TOOL_META: Record<Tool, { icon: string; label: string }> = {
   wall: { icon: "mdi:wall", label: "Wall" },
   door: { icon: "mdi:door", label: "Door" },
   window: { icon: "mdi:window-closed-variant", label: "Window" },
+  // A roof seen from outside, which is the one thing in the icon set that says
+  // "this is overhead" without saying "window" a second time — the two tools
+  // sit next to each other and have to be told apart at a glance.
+  skylight: { icon: "mdi:home-roof", label: "Skylight" },
   tracker: { icon: "mdi:crosshairs-gps", label: "Tracker" },
   area: { icon: "mdi:vector-polygon", label: "Area" },
 };
@@ -390,6 +398,17 @@ export class FloorplanCardEditor extends LitElement {
   @state() private _freeWalls = false;
   /** Default length applied to a freshly placed door/window. User-editable from the context bar. */
   @state() private _defaultOpeningLength = 60;
+  /**
+   * The same, for skylights, and separately — a roof light is not the size of
+   * a door. Two numbers because it has two sides, and both are set before
+   * placing for the same reason the opening length is: a rectangle you have to
+   * place and then resize twice is a rectangle you place in the wrong spot.
+   *
+   * The default is roughly a velux in a plan drawn at the usual scale, in the
+   * portrait proportions {@link SKYLIGHT_WIDTH_RATIO} describes.
+   */
+  @state() private _defaultSkylightLength = 70;
+  @state() private _defaultSkylightWidth = 44;
   @state() private _marquee: Marquee | null = null;
   @state() private _history: FloorplanCardConfig[] = [];
   @state() private _future: FloorplanCardConfig[] = [];
@@ -1349,7 +1368,7 @@ export class FloorplanCardEditor extends LitElement {
       this._capturePointer(ev);
       return;
     }
-    if (this._tool === "door" || this._tool === "window") {
+    if (this._tool === "door" || this._tool === "window" || this._tool === "skylight") {
       this._addOpening(this._tool, this._snap(raw.x), this._snap(raw.y));
       return;
     }
@@ -1706,7 +1725,17 @@ export class FloorplanCardEditor extends LitElement {
     }
 
     // Single opening: keep the wall-snapping (and angle alignment) behavior.
-    if (this._selection.length === 1 && drag.primary.kind === "opening") {
+    // Skylights are exempt — they belong to the ceiling, so there is no wall
+    // for one to snap to, and snapping one anyway was actively hostile: drag a
+    // roof light past a partition and it jumped onto it and span to its angle,
+    // which is not a thing a hole in a ceiling does.
+    if (
+      this._selection.length === 1 &&
+      drag.primary.kind === "opening" &&
+      !openingIsSkylight(
+        f.openings.find((o) => o.id === drag.primary.id) ?? { type: "door" as const }
+      )
+    ) {
       const orig = drag.orig.get(`opening:${drag.primary.id}`);
       if (orig && orig.kind === "pt") {
         const rawX = orig.x + (p.x - drag.start.x);
@@ -1804,7 +1833,11 @@ export class FloorplanCardEditor extends LitElement {
 
   private _addOpening(type: OpeningType, x: number, y: number): void {
     const f = this._floor();
-    const snap = snapToWall(x, y, f.walls, WALL_SNAP);
+    // A skylight is a hole in the ceiling, so there is no wall to drop it onto
+    // and none to take an angle from: it lands where you clicked, square to
+    // the plan, and stays there. Every other opening still snaps.
+    const skylight = type === "skylight";
+    const snap = skylight ? undefined : snapToWall(x, y, f.walls, WALL_SNAP);
     const o: Opening = {
       id: uid(type),
       type,
@@ -1812,8 +1845,12 @@ export class FloorplanCardEditor extends LitElement {
       y: snap?.y ?? y,
       // User-editable from the door/window context bar so opening size can be
       // set BEFORE placing (the previous hardcoded 60 forced place-then-resize).
-      length: this._defaultOpeningLength,
+      length: skylight ? this._defaultSkylightLength : this._defaultOpeningLength,
       angle: snap?.angle ?? 0,
+      // Its second side, which only a skylight has. Written out rather than
+      // left to the default so the very first drag of the Width field has
+      // something to move, and so the plan says what it drew.
+      ...(skylight ? { width: this._defaultSkylightWidth } : {}),
     };
     this._commitFloor({ openings: [...f.openings, o] });
     this._selection = [{ kind: "opening", id: o.id }];
@@ -2425,7 +2462,23 @@ export class FloorplanCardEditor extends LitElement {
    */
   private static readonly OPENING_GROUPS = [
     // What it is, and how it is drawn.
-    ["Shape", ["type", "motion", "length", "sash", "sashSpan", "hinge", "opens", "slide", "style", "angle"]],
+    // `width` and `ceilingHeight` are the skylight's two; `openingForm` only
+    // offers them for one, so they cost every other opening nothing but a
+    // name in this list.
+    ["Shape", [
+      "type",
+      "motion",
+      "length",
+      "width",
+      "ceilingHeight",
+      "sash",
+      "sashSpan",
+      "hinge",
+      "opens",
+      "slide",
+      "style",
+      "angle",
+    ]],
     // Which contacts drive it — the opening's own, before the shutter's.
     ["What it reads", ["entity", "secondaryEntity", "invert"]],
     // How it behaves toward the sun (issue #177), which is neither shape nor
@@ -2995,6 +3048,11 @@ export class FloorplanCardEditor extends LitElement {
       case "opening": {
         const o = f.openings.find((x) => x.id === sel.id);
         if (!o) return "Opening";
+        // A skylight reports both its sides, because it has both and because
+        // that is the pair you are adjusting — one number for a rectangle
+        // reads as half an answer.
+        if (openingIsSkylight(o))
+          return `Skylight · ${Math.round(o.length)}×${Math.round(skylightWidth(o))}`;
         return `${o.type === "door" ? "Door" : "Window"} · ${Math.round(o.length)} units`;
       }
       case "item": {
@@ -3095,6 +3153,54 @@ export class FloorplanCardEditor extends LitElement {
               ? `${n} point${n === 1 ? "" : "s"} placed — click to add more (3+ to close).`
               : `${n} points placed — click the first point to close the room, or keep adding.`}
         </span>
+      `;
+    } else if (t === "skylight") {
+      label = "Skylight";
+      // Two sizes, for the one opening that has two. Same reasoning as the
+      // single Length below — a roof light you have to place and then resize
+      // twice is one you place in the wrong spot — and the hint is different
+      // because the gesture is: there is no wall to aim at.
+      const size = (
+        name: string,
+        value: number,
+        title: string,
+        set: (v: number) => void
+      ) => html`
+        <label class="ctx-field">
+          ${name}
+          <input
+            class="num"
+            type="number"
+            min="1"
+            .value=${String(value)}
+            title=${title}
+            @change=${(e: Event) => {
+              set(Math.max(1, Number((e.target as HTMLInputElement).value) || value));
+            }}
+          />
+        </label>
+      `;
+      body = html`
+        ${size(
+          "Length",
+          this._defaultSkylightLength,
+          "Default long side applied to the next skylight you place",
+          (v) => {
+            this._defaultSkylightLength = v;
+          }
+        )}
+        ${size(
+          "Width",
+          this._defaultSkylightWidth,
+          "Default short side applied to the next skylight you place",
+          (v) => {
+            this._defaultSkylightWidth = v;
+          }
+        )}
+        <span class="ctx-hint"
+          >Click anywhere inside a room to drop a roof window — it sits in the
+          ceiling, so it snaps to no wall.</span
+        >
       `;
     } else if (t === "door" || t === "window") {
       label = t === "door" ? "Door" : "Window";
@@ -3216,6 +3322,9 @@ export class FloorplanCardEditor extends LitElement {
     // fixed-size furniture on top (issue #192): set a badge to 34 on a plan
     // 1200 wide and the number you see here is the one the card renders.
     const overlay = normalizeOverlayScale(c.overlayScale);
+    // And the width it stops shrinking below, which the card applies to the
+    // same unit — so a narrow editor canvas previews what a narrow card draws.
+    const overlayMinW = overlay === "plan" ? normalizeOverlayMinWidth(c.overlayMinWidth) : undefined;
     // Which room, if any, is currently narrowing the selected element's
     // entity picker — animated on the canvas so the scoping is never a
     // mystery (see _scopingAreaId).
@@ -3276,7 +3385,9 @@ export class FloorplanCardEditor extends LitElement {
         <div class="toolbar">
           <!-- Tools — modes; exactly one is active at a time -->
           <div class="seg" role="group" aria-label="Tool">
-            ${(["select", "wall", "door", "window", "tracker", "area"] as Tool[]).map(
+            ${(
+              ["select", "wall", "door", "window", "skylight", "tracker", "area"] as Tool[]
+            ).map(
               (t) => html`
                 <button
                   class=${this._tool === t ? "active" : ""}
@@ -3545,7 +3656,9 @@ export class FloorplanCardEditor extends LitElement {
           <div class="stage ${overlay === "plan" ? "scale-plan" : ""}"
                style="aspect-ratio: ${cssNumber(c.width, DEFAULT_WIDTH)} / ${cssNumber(
             c.height, DEFAULT_HEIGHT)}; width:${this._zoom * 100}%;
-                   --fp-plan-w: ${cssNumber(c.width, DEFAULT_WIDTH)};${skinStyle(
+                   --fp-plan-w: ${cssNumber(c.width, DEFAULT_WIDTH)};${overlayMinW === undefined
+            ? ""
+            : `--fp-min-w: ${overlayMinW}px;`}${skinStyle(
             c.skin
           )}${paletteStyle(c.palette)}">
             <!-- Keyed on the skin and the palette, for the repaint reason
@@ -4282,6 +4395,25 @@ export class FloorplanCardEditor extends LitElement {
             ? { amount: 0.55, style: shutterStyleOf(o), flip: o.shutterFlipV }
             : undefined,
         })}
+        ${
+          // A skylight is an outline around empty floor, and the strokes are
+          // all there is to grab: without this you can only pick it up by its
+          // frame or by a dashed diagonal, which on a large roof light means
+          // most of the shape you are looking at does not answer the pointer.
+          // The card gives every pressable opening the same target for the
+          // same reason (openingHitSize); the wall openings do not need one
+          // here because a door's own symbol is barely wider than the target
+          // would be.
+          openingIsSkylight(o)
+            ? (() => {
+                const hit = openingHitSize(o);
+                return svg`<rect class="skylight-hit"
+                    x=${o.x - hit.width / 2} y=${o.y - hit.height / 2}
+                    width=${hit.width} height=${hit.height}
+                    transform="rotate(${o.angle} ${o.x} ${o.y})" />`;
+              })()
+            : nothing
+        }
       </g>`;
   }
 
@@ -4976,6 +5108,7 @@ export class FloorplanCardEditor extends LitElement {
               "rotationPortrait",
               "rotationLandscape",
               "overlayScale",
+              "overlayMinWidth",
               "compactHeader",
               "zoomedOverlayScale",
             ]),
@@ -5448,7 +5581,11 @@ export class FloorplanCardEditor extends LitElement {
           const dc = entity
             ? (this.hass?.states[entity]?.attributes?.device_class as string | undefined)
             : undefined;
-          patch = { ...patch, ...(dc ? openingFromDeviceClass(dc) : {}) };
+          // …but never over a skylight, which is why this goes through
+          // `openingDeviceClassPatch` rather than asking the device class
+          // directly: that function owns the exception, and owning it
+          // somewhere reachable is what makes it testable.
+          patch = { ...patch, ...openingDeviceClassPatch(o, dc) };
         }
         this._applyElementPatch("opening", o.id, patch, live);
       };
@@ -6352,6 +6489,12 @@ export class FloorplanCardEditor extends LitElement {
     .opening-hit {
       cursor: move;
     }
+    /* The skylight's grab area — invisible, but painted, which is what makes
+       it hit-testable at all: a fill of none would leave the rectangle as empty
+       as the floor under it. */
+    .skylight-hit {
+      fill: transparent;
+    }
     .furn-hit {
       cursor: move;
     }
@@ -6647,7 +6790,8 @@ export class FloorplanCardEditor extends LitElement {
     }
     @supports (container-type: inline-size) and (width: 1cqw) {
       .stage.scale-plan .items {
-        --fp-u: calc(100cqw / var(--fp-plan-w));
+        /* overlayMinWidth clamps the unit exactly as the card does. */
+        --fp-u: calc(max(100cqw, var(--fp-min-w, 0px)) / var(--fp-plan-w));
       }
     }
     /* Label padding and offsets go to em so they track the text with the plan,

@@ -40,6 +40,7 @@ import {
 import {
   WALL_THICKNESS,
   renderOpening,
+  openingHitSize,
   renderWallMask,
   imageFitRatio,
   sunBrightness,
@@ -110,6 +111,7 @@ import {
   areaLabelFontSize,
   wallStrokeStyle,
   normalizeOverlayScale,
+  normalizeOverlayMinWidth,
   overlayLength,
   renderSunlight,
   sunLightDirection,
@@ -983,6 +985,7 @@ export class FloorplanCard extends LitElement {
     // Overlay sizing mode. --fp-plan-w is the canvas width *as displayed*, so a
     // rotated plan divides by the dimension 100cqw actually measures.
     const scale = normalizeOverlayScale(c.overlayScale);
+    const minW = scale === "plan" ? normalizeOverlayMinWidth(c.overlayMinWidth) : undefined;
     // Follow the real sun (issue #113). Elevation comes from the HA instance,
     // so every viewer sees the same picture regardless of their own timezone.
     const sunLevel = c.sunDimming
@@ -1106,6 +1109,7 @@ export class FloorplanCard extends LitElement {
             style="aspect-ratio: ${dims.w} / ${dims.h};
                    width: min(100%, calc(100cqh * ${dims.w} / ${dims.h}));
                    --fp-plan-w: ${dims.w};
+                   ${minW === undefined ? "" : `--fp-min-w: ${minW}px;`}
                    background:${cssColorOr(c.background, SKIN_PAPER)};"
           >
           <!-- preserveAspectRatio="none" is correct here, and it took a wrong
@@ -1373,6 +1377,13 @@ export class FloorplanCard extends LitElement {
                         o.shutterEntity
                           ? shutterAmount(renderHass?.states[o.shutterEntity], o.shutterInvert)
                           : undefined,
+                      // How far a skylight's patch slides from the roof light
+                      // before it lands. Handed on raw: it is a fraction of
+                      // the reach above, which already carries the sun's
+                      // height, so scaling it here would apply 1/tan twice
+                      // and pin every patch under its own skylight at noon.
+                      // Bounded at the sink, in skylightDropFraction.
+                      drop: c.skylightDrop,
                       light: c.sunlightColor ?? SUN_LIGHT_COLOR,
                       shade: c.sunShade === false ? null : (c.sunShadeColor ?? SUN_SHADE_COLOR),
                     }
@@ -1462,8 +1473,9 @@ export class FloorplanCard extends LitElement {
               if (!openingIsPressable(o, this._featuresOf)) return symbol;
               // A transparent rect over the opening's wall gap gives a reliable
               // hit target beyond the thin leaf/panel strokes.
-              const half = o.length / 2;
-              const cutH = WALL_THICKNESS + 4;
+              // The gap for a wall opening, the whole rectangle for a
+              // skylight — see openingHitSize.
+              const hit = openingHitSize(o);
               return svg`<g class="fp-opening" role="button" tabindex="0"
                     @action=${(ev: CustomEvent<{ action: "tap" | "hold" | "double_tap" }>) =>
                       this._onOpeningAction(ev, o)}
@@ -1475,8 +1487,9 @@ export class FloorplanCard extends LitElement {
                       hasDoubleClick: hasAction(this._openingPress(o, "double_tap")?.config),
                     })}>
                   ${symbol}
-                  <rect class="fp-opening-hit" x=${o.x - half} y=${o.y - cutH / 2}
-                        width=${o.length} height=${cutH}
+                  <rect class="fp-opening-hit"
+                        x=${o.x - hit.width / 2} y=${o.y - hit.height / 2}
+                        width=${hit.width} height=${hit.height}
                         transform="rotate(${o.angle} ${o.x} ${o.y})" />
                 </g>`;
             })}
@@ -1750,7 +1763,9 @@ export class FloorplanCard extends LitElement {
     }
     @supports (container-type: inline-size) and (width: 1cqw) {
       .plan.scale-plan .items {
-        --fp-u: calc(100cqw / var(--fp-plan-w));
+        /* Clamp the shared unit so badges and their text keep their proportions.
+           The drawing and overlay positions still follow the actual plan size. */
+        --fp-u: calc(max(100cqw, var(--fp-min-w, 0px)) / var(--fp-plan-w));
       }
     }
     /* The measures that aren't config-driven, so they never reach an inline

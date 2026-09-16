@@ -193,6 +193,63 @@ window, and a top-hung door is not a thing. A hand-written config may still set
 it on a door and the card draws it honestly — this is about what the editor
 suggests, not what it allows.
 
+## Roof windows
+
+*A velux, a roof light, a lantern — a hole in the ceiling rather than in a wall.*
+
+A skylight is drawn as the rectangle it is, seen from below, with four marks
+each doing a job:
+
+- **the kerb**, a plain rectangle in the wall's own colour, because that is what
+  the hole is lined with and what makes it read as structure rather than as a rug;
+- **dashed diagonals**, the floor-plan convention for anything above the cut
+  plane. They are the only thing that tells a roof light from a rectangular
+  piece of furniture at a glance;
+- **the sash**, which foreshortens as it opens. A velux is hinged at its head
+  and swings out, so from directly below you never see it sweep anywhere — you
+  see it get shorter, until wide open it is the edge-on sliver beside its own
+  hinge. It is the [top-hinged window](#top-hinged-windows) one axis further
+  round, and it is the honest picture: a plan view of a top-hung sash has
+  nowhere else to go;
+- **the hinge line**, thicker, along the head edge, so a shut skylight still
+  says which way it opens. Editor: **Hinged at**.
+
+```yaml
+openings:
+  - id: velux
+    type: skylight
+    x: 450
+    y: 220
+    length: 100      # the long side
+    width: 60        # the short one — a roof window is a rectangle
+    angle: 0
+    entity: cover.velux            # the sash
+    shutterEntity: cover.velux_blind   # the blind, which is what darkens the room
+```
+
+Because it stands in no wall, a skylight snaps to none: click anywhere inside a
+room to drop one, and it stays where you put it. Nothing cuts the wall band for
+it, no lamp's pool passes through it, and it is never the way into a
+[dead space](behavior.md#dead-spaces) — you cannot walk through a ceiling.
+
+### The blind is the switch, not the sash
+
+The thing about a velux that surprises people. It is glass, so `glazed` defaults
+**on** and opening the sash changes nothing about the light: what darkens the
+room under it is the blackout blind. Bind it to `shutterEntity` and the slats
+are drawn across the glass, from the same edge the sash is hung at.
+
+A skylight's blind is the one shutter in the plan you look at **face-on** — a
+wall opening's is edge-on, so however far it has travelled the drawing can only
+say up or down. Here half a blind is visibly half a blind, and the patch of sun
+on the floor narrows to match it — and slides to the edge of the glass the blind
+has not reached, which is where the light is actually coming through.
+
+For the roof **hatch** — a loft door, a smoke vent, a lantern with a solid flap
+— set `glazed: false` and the sash itself becomes what lets the light in.
+
+See [Skylights](lighting.md#skylights) for where that light lands.
+
 ## Balcony railings
 
 *"Allow a wall in the floor plan to be marked as belonging to a balcony, rather than being
@@ -349,8 +406,8 @@ sizes (room name `14`, device label `12`):
 So `plan` suits a card rendering down to roughly **two-thirds of its canvas width** on the
 defaults. Below that it trades collision for illegibility, and the sizes have to come up
 to compensate — a `labelSize` of `20`–`24` on a card at half its canvas width lands back
-where the default was. That is a real trade, not a free win: sizes are relative, and
-nothing puts a floor under them.
+where the default was. Alternatively, set `overlayMinWidth` to stop shrinking the
+overlay below a chosen displayed plan width.
 
 So the escape hatch runs both ways. On a card **much** smaller than its canvas, raise the
 sizes rather than switching to `fixed` — the geometry is still right, only the numbers are
@@ -359,6 +416,27 @@ wall tablet showing the plan at full size where a px floor is what keeps text le
 across the room.
 
 The rule of thumb: `plan` is what a plan wants, and the size numbers are yours to set.
+
+### Minimum overlay size
+
+Under **Project → Display → Stop shrinking below**, choose the displayed plan width
+(in pixels) below which badges and labels should stop shrinking. This setting appears
+only with **Canvas units** selected. Zero turns it off.
+
+```yaml
+overlayScale: plan
+overlayMinWidth: 800
+```
+
+On a 980-unit-wide plan, a 14-unit room name scales normally down to an 800px-wide
+plan, then stays about 11.4px tall even in a 505px-wide widget. Badges, readings,
+room names and the other HTML overlays use the same minimum scaling unit, so their
+relative sizes stay consistent. The drawing and label positions continue shrinking.
+
+This trades space for readability: below the threshold, labels and badges can overlap.
+Choose a width that still leaves room for them. The setting is optional, accepts values
+up to 4000px, and has no effect in **Fixed pixels** mode. Rotation uses the displayed
+canvas width; the zoomed badge-size setting still applies independently.
 
 ## Compact header
 
