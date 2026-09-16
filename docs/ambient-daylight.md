@@ -28,6 +28,18 @@ Ambient daylight uses `Area` polygons for two jobs:
 
 An opening that touches exactly one known Area boundary is an exterior daylight source. An opening touching two known Areas is an interior opening and is not a V1 sky-light source. An opening touching no known Area is ignored.
 
+**A skylight is not a V1 source**, and it falls out of that same rule rather than
+being excluded by name: a roof light sits *inside* a room instead of on its
+boundary, so it touches no Area edge and is ignored like any other opening that
+touches none. That is a gap rather than a decision — a roof light sees more sky
+than any wall window, so it is the strongest ambient source a room can have —
+but giving it one needs geometry this layer does not have yet. Every source here
+is a point on a wall with an inward normal and a length; a skylight has no
+inward direction, because it lights the room from above in all of them.
+
+Direct [Sunlight](lighting.md#skylights) does model roof lights fully, so a plan
+with skylights is not dark — it simply gets no *diffuse* contribution from them.
+
 This makes complete room geometry important. If a real neighbouring room has no Area polygon, an opening between that room and a modeled room can look exterior because only one side is represented. V1 keeps that limitation explicit instead of guessing missing topology.
 
 ## Light behaviour
