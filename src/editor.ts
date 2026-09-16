@@ -132,6 +132,7 @@ import {
   hassRenderInputsChanged,
   wallStrokeStyle,
   normalizeOverlayScale,
+  normalizeOverlayMinWidth,
   overlayLength,
 } from "./render";
 import { deadSpacesCached } from "./dead-space";
@@ -3321,6 +3322,9 @@ export class FloorplanCardEditor extends LitElement {
     // fixed-size furniture on top (issue #192): set a badge to 34 on a plan
     // 1200 wide and the number you see here is the one the card renders.
     const overlay = normalizeOverlayScale(c.overlayScale);
+    // And the width it stops shrinking below, which the card applies to the
+    // same unit — so a narrow editor canvas previews what a narrow card draws.
+    const overlayMinW = overlay === "plan" ? normalizeOverlayMinWidth(c.overlayMinWidth) : undefined;
     // Which room, if any, is currently narrowing the selected element's
     // entity picker — animated on the canvas so the scoping is never a
     // mystery (see _scopingAreaId).
@@ -3652,7 +3656,9 @@ export class FloorplanCardEditor extends LitElement {
           <div class="stage ${overlay === "plan" ? "scale-plan" : ""}"
                style="aspect-ratio: ${cssNumber(c.width, DEFAULT_WIDTH)} / ${cssNumber(
             c.height, DEFAULT_HEIGHT)}; width:${this._zoom * 100}%;
-                   --fp-plan-w: ${cssNumber(c.width, DEFAULT_WIDTH)};${skinStyle(
+                   --fp-plan-w: ${cssNumber(c.width, DEFAULT_WIDTH)};${overlayMinW === undefined
+            ? ""
+            : `--fp-min-w: ${overlayMinW}px;`}${skinStyle(
             c.skin
           )}${paletteStyle(c.palette)}">
             <!-- Keyed on the skin and the palette, for the repaint reason
@@ -5102,6 +5108,7 @@ export class FloorplanCardEditor extends LitElement {
               "rotationPortrait",
               "rotationLandscape",
               "overlayScale",
+              "overlayMinWidth",
               "compactHeader",
               "zoomedOverlayScale",
             ]),
@@ -6783,7 +6790,8 @@ export class FloorplanCardEditor extends LitElement {
     }
     @supports (container-type: inline-size) and (width: 1cqw) {
       .stage.scale-plan .items {
-        --fp-u: calc(100cqw / var(--fp-plan-w));
+        /* overlayMinWidth clamps the unit exactly as the card does. */
+        --fp-u: calc(max(100cqw, var(--fp-min-w, 0px)) / var(--fp-plan-w));
       }
     }
     /* Label padding and offsets go to em so they track the text with the plan,
