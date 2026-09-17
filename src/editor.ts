@@ -168,6 +168,7 @@ import {
   rectAreaHasMinimumSize,
   rectAreaPoints,
   rectAreaVertexResize,
+  RECT_AREA_EPSILON,
   rectAreaWallId,
   rectAreaSharedEdgeCouple,
   rectAreaSharedSides,
@@ -1889,13 +1890,7 @@ export class FloorplanCardEditor extends LitElement {
         : moving.points.map((pt, i) => (i === idx ? target : pt));
       const delta = { dx: target.x - moving.points[idx]!.x, dy: target.y - moving.points[idx]!.y };
       const vertexSides: RectAreaSide[] = isRectArea(moving.points)
-        ? idx === 0
-          ? ["top", "left"]
-          : idx === 1
-            ? ["top", "right"]
-            : idx === 2
-              ? ["bottom", "right"]
-              : ["bottom", "left"]
+        ? [RECT_AREA_SIDES[(idx + 3) % 4], RECT_AREA_SIDES[idx]]
         : [];
       let coupled = { areas: f.areas ?? [], coupledIds: new Set<string>() };
       for (const side of vertexSides) {
@@ -1925,7 +1920,7 @@ export class FloorplanCardEditor extends LitElement {
       let points = rectAreaEdgeResize(moving.points, idx, target);
       const edgeStart = moving.points[idx % 4]!;
       const edgeEnd = moving.points[(idx + 1) % 4]!;
-      const horizontal = Math.abs(edgeStart.y - edgeEnd.y) < 0.001;
+      const horizontal = Math.abs(edgeStart.y - edgeEnd.y) < RECT_AREA_EPSILON;
       const movedEdgeStart = points[idx % 4]!;
       const delta = horizontal
         ? { dx: 0, dy: movedEdgeStart.y - edgeStart.y }
@@ -4571,7 +4566,7 @@ export class FloorplanCardEditor extends LitElement {
     const sideWallIndex = sideWallInfo?.edgeIndex ?? -1;
     const sideWallToggle = !!sideWallInfo && !sideWallInfo.area.locked;
     const sideState = sideWallInfo?.area.sideWalls?.[sideWallSide!];
-    const sideIsHorizontal = Math.abs(w.y1 - w.y2) < 0.001;
+    const sideIsHorizontal = Math.abs(w.y1 - w.y2) < RECT_AREA_EPSILON;
     const edgeCursorClass = sideIsHorizontal ? "ns" : "ew";
     const style = w.divider ? dividerStrokeStyle() : wallStrokeStyle(w.thickness, w.kind);
     return svg`
@@ -4738,6 +4733,7 @@ export class FloorplanCardEditor extends LitElement {
   }
 
   private _toggleRectAreaSide(a: Area, edgeIndex: number): void {
+    if (a.locked) return;
     const side = RECT_AREA_SIDES[edgeIndex % RECT_AREA_SIDES.length];
     const next = rectAreaSideWallNext(a.sideWalls?.[side]);
     const sideWalls = { ...(a.sideWalls ?? {}) };
@@ -4789,7 +4785,7 @@ export class FloorplanCardEditor extends LitElement {
                   ? [
                       ...a.points.map((p, i) => {
                         const next = a.points[(i + 1) % a.points.length];
-                        const isHorizontal = Math.abs(p.y - next.y) < 0.001;
+                        const isHorizontal = Math.abs(p.y - next.y) < RECT_AREA_EPSILON;
                         const cursorClass = isHorizontal ? "ns" : "ew";
                         return svg`
                           <line
@@ -4807,7 +4803,7 @@ export class FloorplanCardEditor extends LitElement {
                       ...a.points.map((p, i) => {
                         const next = a.points[(i + 1) % a.points.length];
                         const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
-                        const isHorizontal = Math.abs(p.y - next.y) < 0.001;
+                        const isHorizontal = Math.abs(p.y - next.y) < RECT_AREA_EPSILON;
                         const side = RECT_AREA_SIDES[i]!;
                         const sideState = a.sideWalls?.[side];
                         return svg`

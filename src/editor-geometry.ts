@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import { WALL_THICKNESS, polygonCentroid, pointInPolygon, textLabel } from "./render";
 
-const RECT_AREA_EPSILON = 0.001;
+export const RECT_AREA_EPSILON = 0.001;
 
 /** Element kinds addressable by the editor's selection model. */
 export type SelKind = "wall" | "opening" | "item" | "text" | "furniture" | "tracker" | "area";

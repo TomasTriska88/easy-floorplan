@@ -395,6 +395,48 @@ describe("editor drag", () => {
     document.body.innerHTML = "";
   });
 
+  it("ignores wall toggles on a locked room", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "room1",
+              locked: true,
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 200 },
+                { x: 100, y: 200 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    const area = (ed as any)._floor().areas[0];
+    expect(area.sideWalls?.top).toBeUndefined();
+
+    (ed as any)._toggleRectAreaSide(area, 0);
+    expect((ed as any)._floor().areas[0].sideWalls?.top).toBeUndefined();
+
+    (ed as any)._toggleRectAreaSide(area, 0);
+    expect((ed as any)._floor().areas[0].sideWalls?.top).toBeUndefined();
+
+    document.body.innerHTML = "";
+  });
+
   it("does not trigger a shared-edge coupling when the edges do not match even if a nearby rectangle is present", async () => {
     const host = document.createElement("div");
     host.style.width = "900px";
