@@ -295,6 +295,118 @@ describe("editor drag", () => {
     expect((t.ed as any)._tool).toBe("select");
   });
 
+  it("drags a rectangle room corner handle", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "room1",
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 200 },
+                { x: 100, y: 200 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "room1" }];
+    await ed.updateComplete;
+
+    const [corner] = ed.shadowRoot!.querySelectorAll<SVGCircleElement>("circle.handle");
+    expect(corner).toBeTruthy();
+
+    const from = center(corner!);
+    const to = screenPoint(ed.shadowRoot!.querySelector("svg")!, 70, 70);
+
+    pointer(corner!, "pointerdown", from.x, from.y);
+    pointer(corner!, "pointermove", to.x, to.y);
+    await frame();
+    await ed.updateComplete;
+    pointer(corner!, "pointerup", to.x, to.y);
+    await ed.updateComplete;
+
+    expect((ed as any)._floor().areas[0].points).toEqual([
+      { x: 70, y: 70 },
+      { x: 200, y: 70 },
+      { x: 200, y: 200 },
+      { x: 70, y: 200 },
+    ]);
+    document.body.innerHTML = "";
+  });
+
+  it("drags a plain polygon room corner handle", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "room1",
+              points: [
+                { x: 100, y: 100 },
+                { x: 220, y: 100 },
+                { x: 220, y: 220 },
+                { x: 150, y: 150 },
+                { x: 100, y: 220 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "room1" }];
+    await ed.updateComplete;
+
+    const [corner] = ed.shadowRoot!.querySelectorAll<SVGCircleElement>("circle.handle");
+    expect(corner).toBeTruthy();
+
+    const from = center(corner!);
+    const to = screenPoint(ed.shadowRoot!.querySelector("svg")!, 40, 60);
+
+    pointer(corner!, "pointerdown", from.x, from.y);
+    pointer(corner!, "pointermove", to.x, to.y);
+    await frame();
+    await ed.updateComplete;
+    pointer(corner!, "pointerup", to.x, to.y);
+    await ed.updateComplete;
+
+    const moved = (ed as any)._floor().areas[0].points[0];
+    expect(moved.x).toBeCloseTo(40, 5);
+    expect(moved.y).toBeCloseTo(60, 5);
+    expect((ed as any)._floor().areas[0].points.slice(1)).toEqual([
+      { x: 220, y: 100 },
+      { x: 220, y: 220 },
+      { x: 150, y: 150 },
+      { x: 100, y: 220 },
+    ]);
+    document.body.innerHTML = "";
+  });
+
   it("drags and toggles a selected area's edge segment away from the endpoints", async () => {
     const host = document.createElement("div");
     host.style.width = "900px";

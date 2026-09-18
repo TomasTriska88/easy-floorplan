@@ -466,10 +466,11 @@ Everything the card does beyond placing elements, in four guides:
 
 ```bash
 npm install
-npm run build   # bundles to dist/easy-floorplan-card.js
-npm run watch   # rebuild on change
-npm test        # node suite
-npm run ha      # a real Home Assistant in Docker, with a seeded demo plan
+npm run build         # bundles to dist/easy-floorplan-card.js
+npm run watch         # rebuild on change
+npm test              # node suite
+npm run test:browser  # browser suite
+npm run ha            # a real Home Assistant in Docker, with a seeded demo plan
 ```
 
 Build and test commands, and which of the two test suites a change needs, are in

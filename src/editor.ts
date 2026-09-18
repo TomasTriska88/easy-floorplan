@@ -233,7 +233,7 @@ const TOOL_META: Record<Tool, { icon: string; label: string }> = {
   door: { icon: "mdi:door", label: "Door" },
   window: { icon: "mdi:window-closed-variant", label: "Window" },
   tracker: { icon: "mdi:crosshairs-gps", label: "Tracker" },
-  area: { icon: "mdi:vector-polygon", label: "Area" },
+  area: { icon: "mdi:vector-polygon", label: "Area" }
 };
 
 /**
@@ -1894,19 +1894,21 @@ export class FloorplanCardEditor extends LitElement {
         : [];
       let coupled = { areas: f.areas ?? [], coupledIds: new Set<string>() };
       for (const side of vertexSides) {
-        const next = this._coupleRectAreaSharedEdges(drag.primary.id, moving.points, delta, f.areas ?? [], side);
+        const next = this._coupleRectAreaSharedEdges(drag.primary.id, moving.points, delta, coupled.areas, side);
         coupled = {
           areas: next.areas,
           coupledIds: new Set([...coupled.coupledIds, ...next.coupledIds]),
         };
       }
-      if (!rectAreaHasMinimumSize(points)) {
+      if (isRectArea(moving.points) && !rectAreaHasMinimumSize(points)) {
         this._emitFloor({
           areas: (f.areas ?? []).map((a) => (a.id === drag.primary.id ? { ...a, points: moving.points } : a)),
         });
         return;
       }
-      this._emitFloor({ areas: coupled.areas });
+      this._emitFloor({
+        areas: coupled.areas.map((a) => (a.id === drag.primary.id ? { ...a, points } : a)),
+      });
       return;
     }
 
