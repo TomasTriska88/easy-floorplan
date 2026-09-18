@@ -30,6 +30,7 @@ Back to the [README](../README.md).
 | `sunShadeColor` | string | black             | Colour of that shade — a blue reads as cold north light, a warm grey as dusk. |
 | `ambientDaylight` | boolean | `false`          | Soft room-aware daylight from the sky through exterior openings, independent of sun bearing. Needs Area polygons. See [Ambient daylight](lighting.md#ambient-daylight). |
 | `sunReach`   | number   | `0.34`             | How far light carries from an opening, as a fraction of the plan's shorter side. It fades out over that distance rather than stopping at it, and shortens as the sun climbs. Clamped to `0.02`–`1.5`; anything unreadable falls back to the default. |
+| `skylightDrop` | number | `0.55`             | How far a **skylight's** patch of sun slides from the skylight before it reaches the floor, as a fraction of `sunReach`. Stated against the reach because the reach already carries `1/tan(elevation)`, which is exactly the factor a ceiling height needs — so a midday sun drops the light nearly straight down and an evening one throws it across the room. Per skylight, `ceilingHeight` multiplies it. Clamped to `0`–`4`. |
 | `skin`       | string   | `default`          | Built-in look for the whole plan: `default`, `odnetnin`, `pastel` or `tron`. See [Skins](appearance.md#skins). |
 | `pressEffect`| string   | `scale`            | Feedback when a device is pressed: `scale`, `ripple`, `flash` or `none`. Only devices that actually do something respond. See [Press feedback](../README.md#press-feedback). |
 | `offlineStyle`| string  | `dim`              | How a device whose entity is **offline** is drawn: `dim`, `strike` (dimmed with a diagonal through the badge) or `none`. See [Offline devices](behavior.md#offline-devices). |
@@ -43,7 +44,7 @@ Back to the [README](../README.md).
 | `defaultFloor`| string  | first floor        | Id of the floor shown first.                 |
 | `floorSwitcher` | `{x, y}` | top-right corner | Where the floor buttons sit on the plan, in canvas units — the point the block is centred on. Drag it on the editor canvas. Follows `rotation` like every other anchor. See [Where the floor switcher sits](appearance.md#where-the-floor-switcher-sits). |
 | `walls`      | Wall[]   | `[]`               | Wall segments (single-floor / floor 1).      |
-| `openings`   | Opening[]| `[]`               | Doors and windows (swing or sliding).        |
+| `openings`   | Opening[]| `[]`               | Doors, windows and skylights.                |
 | `items`      | Item[]   | `[]`               | Entity devices.                              |
 | `texts`      | Text[]   | `[]`               | Free text labels.                            |
 | `furniture`  | Furniture[]| `[]`             | Gray furniture/fixture diagrams.             |
@@ -157,25 +158,32 @@ balcony, terrace or gallery. A railing is drawn at 40% of the wall weight, lamp 
 sunlight carry on over it, and it seals off no dead space. Editor: **Kind**. See
 [Balcony railings](appearance.md#balcony-railings).
 
-## Opening (door / window)
+## Opening (door / window / skylight)
+
+A `skylight` is a hole in the **ceiling** — a velux, a roof light, a lantern —
+rather than in a wall, so it reads a slightly different set of these fields.
+See [Skylights](lighting.md#skylights) for what the sun does with one and
+[Roof windows](appearance.md#roof-windows) for how it is drawn.
 
 | Field         | Type                        | Description                                            |
 | ------------- | --------------------------- | ------------------------------------------------------ |
 | `id`          | string                      | Unique id.                                             |
-| `type`        | `door` \| `window`          | The kind of opening.                                   |
+| `type`        | `door` \| `window` \| `skylight` | The kind of opening. A `skylight` snaps to no wall, cuts no wall band, opens no doorway for a lamp's pool, and is never the way into a [dead space](behavior.md#dead-spaces) — it is not in a wall to begin with. It is always top-hung, so it ignores `motion`, `sash`, `sashSpan`, `sliderStyle` and `flipH`. |
+| `width`       | number                      | **Skylights only**: the other plan dimension, across `length`. A roof window is a rectangle you look down on, so it needs both sides — and the patch of sun it lays is that rectangle, moved. Defaults to 0.62 of `length` (portrait, like an ordinary velux). |
+| `ceilingHeight` | number (clamped `0.1`–`8`) | **Skylights only**: how high the ceiling is here, as a multiple of an ordinary storey (default `1`). Not a distance — the plan has no vertical unit — but the multiplier on how far the patch of light slides before it lands, which is the only thing a ceiling height changes about a plan view. `2` is a stairwell, `0.6` a low attic. Scales `skylightDrop`. The editor's slider offers `0.2`–`4`, which is the useful range; YAML may go further and is clamped. |
 | `motion`      | `swing` \| `slide` \| `roll` \| `fixed` \| `awning` | How it moves: hinged (default), sliding panels, a roll-up curtain (garage / roller shutter), `fixed` — a window that does not open (bay, picture, sealed pane) — or `awning`, hinged at the head and swung out at the sill. A fixed opening draws no leaf and no arc, ignores `entity` for its drawing, and never counts as a gap; glazing still applies, so it passes daylight like the glass it is. See [Top-hinged windows](appearance.md#top-hinged-windows) for `awning`. |
 | `sunlight`    | boolean                     | `false` takes this opening out of the **natural** light entirely — both [Sunlight](lighting.md#sunlight) and [Ambient daylight](lighting.md#ambient-daylight) — it admits no light and blocks it like wall, however open it is drawn. Editor: **Lets sunlight in**. For the solid door with no sensor, which the plan draws open. |
-| `glazed`      | boolean                     | Lets light through even when shut. Defaults per type — a window is glass, a door is not. Set `true` on a **patio or French door**, which is drawn as a door because that is how it swings but is a wall of glass; set `false` on an opaque window like a glass-brick panel or a hatch, which then admits light only as far as it is open. Every light layer reads it — [Sunlight](lighting.md#sunlight), [Ambient daylight](lighting.md#ambient-daylight) and a lamp's own pool — so glass is glass to all three. A `motion: roll` window is the exception: that is a roller shutter standing in for the glass, so it is judged by how far down it is. |
+| `glazed`      | boolean                     | Lets light through even when shut. Defaults per type — a window and a skylight are glass, a door is not. Set `true` on a **patio or French door**, which is drawn as a door because that is how it swings but is a wall of glass; set `false` on an opaque window like a glass-brick panel or a hatch, which then admits light only as far as it is open. Every light layer reads it — [Sunlight](lighting.md#sunlight), [Ambient daylight](ambient-daylight.md) and a lamp's own pool — so glass is glass to all three. A **skylight** is the exception, and only for ambient: that layer finds its sources by which Area boundary an opening sits on, and a roof light sits inside a room rather than on its edge, so it is not a V1 ambient source and its glazing is not read there. Direct sunlight and a lamp's pool are unaffected. A `motion: roll` window is the exception: that is a roller shutter standing in for the glass, so it is judged by how far down it is. **On a skylight this is the field to know about**: glazed (the default), the sash makes no difference to the light and only the blind does, which is the truth about a velux and a surprise to anyone who bound the sash expecting a switch. `false` is the roof **hatch** — a loft door, a smoke vent, a lantern with a solid flap — where the sash itself is what lets the light in. |
 | `sashSpan`    | number (0.05–1)             | Share of the opening the operable leaf covers; the rest is drawn as a fixed pane — thin glass on a window, a solid panel on a door. Default 1 (the leaf fills the frame). Single-**leaf** swing openings, doors included — a double already splits the frame between its leaves. The leaf hangs at the hinge jamb, so `flipH` moves it and its pane together, and a half-width leaf swung wide open clears half the opening rather than all of it. Values below `0.05` are clamped to it: a leaf of no width is a fixed pane, which `motion: fixed` says properly. |
 | `sash`        | `single` \| `double`        | Swing openings only: how many hinged leaves. The default differs by type, because the ordinary cases do — a window opens with `double` (two casement sashes), a door with `single` (one leaf across the opening). Set it to draw a single-sash window or a **double door**; both leaves then hinge at their own jamb and trace their own arc. Ignored by sliding and rolling openings. |
-| `shutterEntity` | string                     | An external shutter over the same gap (`cover` or contact), with its own open/closed state. With `entity` bound too, the card draws the shutter's own icon beside the opening — open/closed in both glyph and colour — and tapping that icon opens the shutter. Bound alone, the icon is opt-in through `showShutterIcon`. |
+| `shutterEntity` | string                     | An external shutter over the same gap — a skylight's **blind** (`cover` or contact), with its own open/closed state. A skylight's blind is the one shutter in the plan you see face-on, so its half-way positions count: the slats are drawn across the glass at the fraction the cover reports and the patch of sun narrows to match. A wall opening's shutter is edge-on and can only be up or down. With `entity` bound too, the card draws the shutter's own icon beside the opening — open/closed in both glyph and colour — and tapping that icon opens the shutter. Bound alone, the icon is opt-in through `showShutterIcon`. |
 | `shutterStyle` | `swing` \| `roll`           | Louvered panels or a roll-up curtain. Defaults from the entity (contact → `swing`, `cover` → `roll`). |
 | `shutterInvert` | boolean                   | Flip the shutter's open/closed reading — a reed contact on hinged panels often reads `on` when they are shut. Separate from `invert`. |
 | `shutterSecondaryEntity` | string            | Hinged shutters only: a second contact for the shutter's other panel, so one can be folded back while the other is still across the glass. Its own key rather than `secondaryEntity` — a double casement behind a pair of shutters has four leaves. `shutterInvert` covers both panels; the roll curtain ignores it. |
 | `shutterActiveColor` | string               | Shutter color while open. Falls back to `activeColor`, then the accent. |
 | `shutterFlipV` | boolean                    | Hang hinged panels on the sash's own side of the wall instead of the far side. Ignored by the roll curtain. |
 | `x`, `y`      | number                      | Center position.                                       |
-| `length`      | number                      | Length along the wall.                                 |
+| `length`      | number                      | Length along the wall — and for a **skylight**, which is in no wall, its longer plan side. `width` is the other one. |
 | `angle`       | number                      | Rotation in degrees.                                   |
 | `entity`      | string                      | Contact `binary_sensor`, `cover` or `lock` driving open/closed (a `cover`'s `current_position` gives partial travel). A **lock** reads `unlocked` as open and `locked` as closed — see [Doors on locks](behavior.md#doors-on-locks). |
 | `secondaryEntity` | string                  | Anything with **two leaves**: a second contact / `cover` for the other leaf, so each moves on its own state. That means the two-panel sliders (`biparting`, `biparting-bypass`, `converging`) and any hinged double — a casement window, or a `sash: double` door. `entity` drives the leaf at the −x jamb, so `flipH` swaps which sensor draws which. Unset = both follow `entity`; ignored where there is only one leaf. |
@@ -507,6 +515,10 @@ openings:
   - { id: d1, type: door, x: 300, y: 500, length: 80, angle: 0,
       entity: binary_sensor.front_door, activeColor: "#ef5350" }
   - { id: win1, type: window, x: 600, y: 100, length: 140, angle: 0 }
+  # A roof window over the middle of the room: no wall, two sides, and a
+  # blind that is what darkens the room under it.
+  - { id: sky1, type: skylight, x: 500, y: 300, length: 100, width: 60, angle: 0,
+      entity: cover.velux, shutterEntity: cover.velux_blind }
 items:
   - { id: i1, entity: light.living_room, x: 240, y: 200, kind: light, glow: true }
   - { id: i2, entity: binary_sensor.presence, x: 380, y: 380, kind: binary_sensor,
@@ -657,7 +669,7 @@ label gets no Label group, and an opening with no shutter gets no Shutter group.
 | Element | Groups |
 | --- | --- |
 | Device | Identity · What it reads · Label · Badge · Color · Effects · Behaviour · Visibility |
-| Door / window | Shape · What it reads · Sunlight · Shutter · Badge · Color · Behavior |
+| Door / window / skylight | Shape · What it reads · Sunlight · Shutter · Badge · Color · Behavior |
 | Furniture | Shape · What it reads · Behavior · Color |
 | Area | Identity · What it reads · Color · Behavior · Home Assistant area |
 | Tracker | Zone · Sensors · Marker |
