@@ -5,6 +5,7 @@ import {
   findSymbol,
   renderSymbolParts,
   type SymbolCatalog,
+  type SymbolPart,
 } from "./symbols";
 import type {
   FloorplanCardConfig,
@@ -1174,9 +1175,12 @@ export function renderSunDimMask(
 }
 
 /**
- * A `<mask>` for the whole glow layer that **dims** the light over every
- * furniture footprint. Round-based types cut an ellipse, everything else its
- * rotated rect.
+ * A `<mask>` for the whole glow layer that **dims** the light where furniture
+ * stands, by painting each piece's own symbol geometry into the mask (see
+ * {@link renderFurnitureMask}). The dimmed area follows the piece's outline —
+ * the notch of an L-shaped sectional dims as floor, not the rectangle around
+ * it (issue #248) — and a config's own symbols get the same treatment as the
+ * built-ins.
  *
  * This is a dial with a reported bug at each end, which is why it is a grey
  * and not `black` ({@link FURNITURE_GLOW_TRANSMISSION}):
@@ -1209,23 +1213,113 @@ export function renderGlowMask(
         <rect x=${-pad} y=${-pad} width=${width + pad * 2} height=${height + pad * 2}
               fill="white" />
         ${furniture.map((f) => {
-          const rot = f.angle ? `rotate(${f.angle} ${f.x} ${f.y})` : undefined;
-          // The symbol says which shape its outline is, so a round-bodied piece
-          // casts a round shadow. This used to be a hard-coded list of the three
-          // round types, kept in sync by hand with the same list in the glyph.
-          const roundBase = findSymbol(catalog, f.type)?.footprint === "ellipse";
           // A mask's luminance is its transmission, and the region is already
           // white ("all the light"). So furniture paints *black* at the share
           // it blocks, leaving the share it lets through.
           const blocked = 1 - FURNITURE_GLOW_TRANSMISSION;
-          return roundBase
-            ? svg`<ellipse cx=${f.x} cy=${f.y} rx=${f.w / 2} ry=${f.h / 2}
-                           fill="#000" fill-opacity=${blocked} transform=${rot ?? nothing} />`
-            : svg`<rect x=${f.x - f.w / 2} y=${f.y - f.h / 2} width=${f.w} height=${f.h}
-                        fill="#000" fill-opacity=${blocked} transform=${rot ?? nothing} />`;
+
+          return renderFurnitureMask(f, "#000", "#000", blocked, catalog);
         })}
       </mask>
     </defs>`;
+}
+
+/**
+ * A furniture piece drawn as mask geometry: the same parts the glyph shows,
+ * painted at the share it blocks. {@link renderGlowMask} uses this so the
+ * dimmed footprint matches the piece's real outline — a rectangular crate, a
+ * round table, an L-shaped sectional — rather than the bounding box the mask
+ * used to cut (issue #248).
+ *
+ * A mask's luminance is its transmission, so the piece paints **black** at the
+ * share `overrideOp` it blocks. Only closed geometry (rect, circle, ellipse, a
+ * filled polygon, a path whose every subpath is sealed with `Z`) casts a
+ * shadow across its interior; open line work — a sofa's seat separators, a
+ * tub's rim — blocks just the light its strokes cover, fill or no fill. So a
+ * piece drawn purely as open strokes must have a closed shape outermost for
+ * the mask to read; the `furniture/` authors' note in the README warns about
+ * exactly that.
+ *
+ * The overrides are optional because the same helper can drive a plain
+ * rendering; `color` doubles as the stroke color, `overrideFill` as the fill,
+ * and `overrideOp` as the fill's opacity — passing it is what marks the call
+ * as a mask, which is when open parts lose their fill.
+ */
+export function renderFurnitureMask(
+  f: Furniture,
+  overrideColor?: string,
+  overrideFill?: string,
+  overrideOp?: number,
+  catalog: SymbolCatalog = BUILTIN_SYMBOLS,
+): SVGTemplateResult {
+  const color = overrideColor ?? f.color ?? FURNITURE_COLOR;
+  let symbol = findSymbol(catalog, f.type) ?? FALLBACK_SYMBOL;
+
+  if (overrideOp !== undefined) {
+    // `findSymbol` hands back a reference into the (possibly global) catalog,
+    // so copy the symbol before writing to it — otherwise the mask's opacity
+    // leaks into the furniture the card draws on top.
+    symbol = structuredClone(symbol);
+
+    symbol.parts = symbol.parts.map((p) => {
+      // Only sealed, closed shapes have an interior for the mask to dim. An
+      // open stroke is forced back to no fill at all — SVG fills an open path
+      // by implicitly closing it, so a `role: "body"` path left with its own
+      // fill opacity would smear a wedge the glyph never draws (the tub's rim
+      // in #248's cover image). Zeroing it here, rather than in
+      // `partTemplate`, keeps ordinary furniture rendering untouched.
+      p.style.fillOpacity = closedGeometry(p) ? overrideOp : 0;
+      return p;
+    });
+  }
+
+  const parts = renderSymbolParts(symbol, f.w, f.h, color, overrideFill);
+
+  // `hand: "left"` is the same symbol reflected, not a second drawing \u2014 which is
+  // what the L-shaped sectional's two hands always were, and it now works on any
+  // symbol. A mirror is uniform in |scale|, so strokes keep their width.
+  const mirror = f.hand === "left" ? " scale(-1 1)" : "";
+
+  // No `data-id`/`data-entity` here, unlike `renderFurniture`: this group is
+  // mask *source* geometry, and an unscoped card-mod rule like
+  // `[data-entity="light.kitchen"] { filter: … }` would then repaint the mask
+  // itself, bending the light pool it cuts.
+  return svg`<g class=${`fp-furniture-mask fp-furniture-mask-${cssIdent(f.type) ?? "unknown"}`}
+                transform="translate(${f.x} ${f.y}) rotate(${f.angle ?? 0})${mirror}">${parts}</g>`;
+}
+
+/**
+ * Whether a part is closed geometry a mask can dim across its interior. Open
+ * line work (and an unsealed path) only blocks the light its stroke covers.
+ */
+function closedGeometry(p: SymbolPart): boolean {
+  switch (p.kind) {
+    case "rect":
+    case "circle":
+    case "ellipse":
+      return true;
+    case "poly":
+      return p.closed;
+    case "path": {
+      // Every subpath must be sealed, not just the last one: SVG fills an open
+      // subpath by closing it implicitly, so `M … Z M …` (a trailing open
+      // stroke) and `M … M … Z` (a leading one) both smear a wedge the glyph
+      // never draws. A fresh `M` while the previous subpath is still open is
+      // that second case, so walk the commands rather than reading the last.
+      let open = false;
+      for (const c of p.cmds) {
+        if (c[0] === "M") {
+          if (open) return false;
+          open = true;
+        } else if (c[0] === "Z") {
+          open = false;
+        }
+      }
+      return !open;
+    }
+    case "line":
+      return false;
+  }
 }
 
 /**

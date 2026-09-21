@@ -66,7 +66,10 @@ export interface SymbolDef {
   size: { w: number; h: number };
   /** Authoring box: `[x, y, w, h]`, origin top-left. */
   viewBox: [number, number, number, number];
-  /** Shape the glow mask cuts for this piece (#106). */
+  /**
+   * Parsed for compatibility; the glow mask dims the symbol's own geometry
+   * now (#248), so this no longer shapes the mask (#106) and nothing reads it.
+   */
   footprint: "rect" | "ellipse";
   parts: SymbolPart[];
 }
@@ -520,8 +523,10 @@ function paint(style: PartStyle, color: string) {
   return { fill, stroke, style };
 }
 
-function partTemplate(p: SymbolPart, m: Mapper, color: string): SVGTemplateResult {
+function partTemplate(p: SymbolPart, m: Mapper, color: string, fillColor?: string): SVGTemplateResult {
   const { fill, stroke, style } = paint(p.style, color);
+  const fillC = fillColor ?? fill;
+
   // Omitted rather than defaulted: `opacity="1"` and `stroke-dasharray="none"`
   // on every part would triple the markup a large plan carries for no effect.
   const op = style.opacity < 1 ? style.opacity : nothing;
@@ -539,23 +544,23 @@ function partTemplate(p: SymbolPart, m: Mapper, color: string): SVGTemplateResul
       return svg`<rect x=${fmt(m.x(p.x))} y=${fmt(m.y(p.y))}
                        width=${fmt(m.sx(p.w))} height=${fmt(m.sy(p.h))}
                        rx=${p.rx > 0 ? fmt(m.len(p.rx)) : nothing}
-                       fill=${fill} fill-opacity=${fillOp}
+                       fill=${fillC} fill-opacity=${fillOp}
                        stroke=${stroke} stroke-width=${sw}
                        stroke-dasharray=${dash} opacity=${op} />`;
     case "circle":
       return svg`<circle cx=${fmt(m.x(p.cx))} cy=${fmt(m.y(p.cy))} r=${fmt(m.len(p.r))}
-                         fill=${fill} fill-opacity=${fillOp}
+                         fill=${fillC} fill-opacity=${fillOp}
                          stroke=${stroke} stroke-width=${sw} opacity=${op} />`;
     case "ellipse":
       return svg`<ellipse cx=${fmt(m.x(p.cx))} cy=${fmt(m.y(p.cy))}
                           rx=${fmt(m.sx(p.rx))} ry=${fmt(m.sy(p.ry))}
-                          fill=${fill} fill-opacity=${fillOp}
+                          fill=${fillC} fill-opacity=${fillOp}
                           stroke=${stroke} stroke-width=${sw} opacity=${op} />`;
     case "poly": {
       const pts = p.pts.map(([x, y]) => `${fmt(m.x(x))},${fmt(m.y(y))}`).join(" ");
       return p.closed
         ? svg`<polygon points=${pts}
-                       fill=${fill} fill-opacity=${fillOp}
+                       fill=${fillC} fill-opacity=${fillOp}
                        stroke=${stroke} stroke-width=${sw}
                        stroke-linejoin="round" opacity=${op} />`
         : svg`<polyline points=${pts} fill="none"
@@ -584,14 +589,20 @@ function partTemplate(p: SymbolPart, m: Mapper, color: string): SVGTemplateResul
 /**
  * A symbol's parts, drawn into a `w × h` box centered on the origin, in
  * `color`. The caller wraps them in the positioned group.
+ *
+ * `fillColor`, when given, overrides the fill — the light mask paints each
+ * piece black. Which parts fill at all is the caller's call: the mask dims
+ * only closed geometry (see {@link renderFurnitureMask}), and a stroke keeps
+ * `fill="none"` for itself because its role's fill opacity is 0.
  */
 export function renderSymbolParts(
   def: SymbolDef,
   w: number,
   h: number,
-  color: string
+  color: string,
+  fillColor?: string,
 ): SVGTemplateResult[] {
   const box = mapper(def, w, h, "box");
   const square = mapper(def, w, h, "square");
-  return def.parts.map((p) => partTemplate(p, p.space === "square" ? square : box, color));
+  return def.parts.map((p) => partTemplate(p, p.space === "square" ? square : box, color, fillColor));
 }

@@ -21,7 +21,8 @@ there is no `<script>`, no `on*` handler, no `javascript:` href, and no colour t
   "keywords": ["couch", "settee"],   // search only — "couch" should find this
   "size": { "w": 170, "h": 72 },     // default size when someone places it
   "viewBox": [0, 0, 100, 100],       // optional; this is the default
-  "footprint": "rect",               // optional; "ellipse" for a round-bodied piece
+  // "footprint" is accepted for compatibility but unused: the light mask
+  // follows the symbol's own geometry now.
   "parts": [
     { "rect": [0, 0, 100, 100], "rx": 5.555556, "role": "body" },
     { "line": [0, 30, 100, 30] },
@@ -103,6 +104,10 @@ which is a `body` at `0.08` with a dashed outline.
 Check it at its default size *and* stretched: a glyph can be right by the numbers and wrong
 on screen. `npm run ha` (see [`docker/README.md`](../docker/README.md)) gets you
 an editor to drop it into and resize.
+
+### Lighting
+
+If you create your own furniture, be careful which primitives you use for what. For the lighting mask to display correctly, always use at least a closed shape as the outermost line. For example, if you draw a hexagonal table, do not draw the outer lines as separate `line` objects, use a `polygon` instead.
 
 ## What gets merged
 
