@@ -1523,11 +1523,23 @@ export class FloorplanCardEditor extends LitElement {
         this._updateAreaRectangleDraft(current);
         return;
       }
-      if (!this._areaDragMoved && this._areaDragTimer === null && (current.x !== start.x || current.y !== start.y)) {
+      // Below the slop this is a click, not a rectangle drag — the same rule
+      // `_applyDrag` and the marquee use, so a press that jitters a few
+      // virtual units and then holds can't turn into an (empty) draft.
+      if (
+        !this._areaDragMoved &&
+        this._areaDragTimer === null &&
+        Math.hypot(current.x - start.x, current.y - start.y) > DRAG_SLOP
+      ) {
         this._areaDragTimer = setTimeout(() => {
           this._areaDragTimer = null;
           const target = this._areaDragCurrent;
-          if (!this._areaDragStart || !target || (target.x === start.x && target.y === start.y)) return;
+          if (!this._areaDragStart || !target) return;
+          // The draft only becomes one once the snapped corner actually
+          // leaves the start cell — a pointer that wandered and came back is
+          // still a click (see `_updateAreaRectangleDraft`).
+          const snapped = { x: this._snap(target.x), y: this._snap(target.y) };
+          if (snapped.x === start.x && snapped.y === start.y) return;
           this._areaDragMoved = true;
           this._updateAreaRectangleDraft(target);
         }, AREA_DRAG_HOLD_MS);

@@ -295,6 +295,28 @@ describe("editor drag", () => {
     expect((t.ed as any)._tool).toBe("select");
   });
 
+  it("keeps a sub-slop jitter on Area a polygon vertex, not an (empty) rectangle", async () => {
+    const t = await mountEditor();
+    t.ed.shadowRoot!.querySelector<HTMLButtonElement>('button[title="Area"]')!.click();
+    await t.ed.updateComplete;
+
+    const start = screenPoint(t.svg, 100, 100);
+    // Moves under DRAG_SLOP (4) — the jitter a real press produces — must not
+    // arm the rectangle hold-timer, even when the pointer then holds still.
+    const wobble = screenPoint(t.svg, 102, 101);
+    pointer(t.svg, "pointerdown", start.x, start.y);
+    pointer(t.svg, "pointermove", wobble.x, wobble.y);
+    await delay(220);
+    pointer(t.svg, "pointerup", wobble.x, wobble.y);
+    await t.ed.updateComplete;
+
+    // Still a click, so still polygon mode with one vertex placed — not a
+    // (tiny) committed rectangle and a flip back to the Select tool.
+    expect((t.ed as any)._floor().areas).toEqual([]);
+    expect((t.ed as any)._draftArea?.points).toHaveLength(1);
+    expect((t.ed as any)._tool).toBe("area");
+  });
+
   it("drags a rectangle room corner handle", async () => {
     const host = document.createElement("div");
     host.style.width = "900px";
@@ -590,16 +612,25 @@ describe("editor drag", () => {
     (ed as any)._selection = [{ kind: "area", id: "room1" }];
     await ed.updateComplete;
 
-    const [edge] = ed.shadowRoot!.querySelectorAll<SVGLineElement>(".area-edge-hit");
+    // The vertical right edge (index 1): a horizontal-edge move only consumes
+    // the y coordinate, so an x-only nudge would leave the room unchanged and
+    // make the coupling assertions below vacuous.
+    const edge = ed.shadowRoot!.querySelectorAll<SVGLineElement>(".area-edge-hit")[1];
     expect(edge).toBeTruthy();
 
     const from = center(edge!);
+    // Move toward — but not onto — room2's left edge (x=30): far enough to
+    // register as a drag (DRAG_SLOP is 4), close enough to prove the geometry
+    // genuinely changed.
+    const to = screenPoint(ed.shadowRoot!.querySelector("svg")!, 25, 15);
     pointer(edge!, "pointerdown", from.x, from.y);
-    pointer(edge!, "pointermove", from.x + 10, from.y);
-    pointer(edge!, "pointerup", from.x + 10, from.y);
+    pointer(edge!, "pointermove", to.x, to.y);
+    await ed.updateComplete;
+    pointer(edge!, "pointerup", to.x, to.y);
     await ed.updateComplete;
 
-    expect((ed as any)._floor().areas[0].points[1].x).toBe(20);
+    // The right edge actually moved, and the mismatched neighbor did not couple.
+    expect((ed as any)._floor().areas[0].points[1].x).toBeCloseTo(25, 5);
     expect((ed as any)._floor().areas[1].points[0].x).toBe(30);
     document.body.innerHTML = "";
   });
