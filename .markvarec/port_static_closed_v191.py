@@ -15,7 +15,7 @@ replace_once(
     "src/types.ts",
     '''  entity?: string;
   /**
-   * A second contact / \`cover\` driving the opening's **other** leaf, for
+   * A second contact / `cover` driving the opening's **other** leaf, for
 ''',
     '''  entity?: string;
   /**
@@ -26,7 +26,7 @@ replace_once(
    */
   staticClosed?: boolean;
   /**
-   * A second contact / \`cover\` driving the opening's **other** leaf, for
+   * A second contact / `cover` driving the opening's **other** leaf, for
 ''',
 )
 
@@ -38,7 +38,7 @@ replace_once(
 }
 ''',
     '''export function openingDefaultOpen(o: Opening): boolean {
-  // \`staticClosed\` is a static-only override. If a hand-written config
+  // `staticClosed` is a static-only override. If a hand-written config
   // leaves it next to an entity, the live opening keeps the ordinary fallback
   // while that entity is loading; the actual live state still wins normally.
   const natural =
