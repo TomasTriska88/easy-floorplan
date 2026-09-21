@@ -5693,11 +5693,93 @@ describe("renderGlowMask — furniture is dimmed, not blacked out (#108, #106)",
       renderGlowMask([{ id: "l", type: "sectional", x: 0, y: 0, w: 230, h: 180 }] as never,
         1000, 600, "gm")
     );
-    // The L's inner corner sits at x = 58/100 of the authoring box's width
-    // (58 × 2.3 − 115 = 18.4). Only the symbol's own polygon produces that
-    // vertex; a bounding-box rect never would.
+    // The L's inner corner sits at 58/100 across and 55/100 down the authoring
+    // box (58 × 2.3 − 115, 55 × 1.8 − 90). Only the symbol's own polygon
+    // produces that vertex; a bounding-box rect never would. Read numerically:
+    // the mapper's arithmetic lands on 18.399999999999977, and a regex over
+    // that would be a test of float printing rather than of the geometry.
     expect(markup).toContain("<polygon");
-    expect(markup).toMatch(/18\.3\d+,9/);
+    const pts = /points=([-\d.,\s]+)/.exec(markup)?.[1] ?? "";
+    const vertices = pts.trim().split(/\s+/).map((v) => v.split(",").map(Number));
+    expect(
+      vertices.some(([x, y]) => Math.abs(x - 18.4) < 1e-6 && Math.abs(y - 9) < 1e-6)
+    ).toBe(true);
+  });
+
+  // An open path has no interior to dim, but SVG does not agree: it closes one
+  // implicitly to fill it. So a contributed `role: "body"` path left open — a
+  // tub's rim, a curved backrest — would paint a black wedge into the mask
+  // that the furniture glyph itself never draws (#248's cover image).
+  it("leaves an open path unfilled in the mask whatever its role claims", () => {
+    const catalog = symbolCatalog({
+      rim: {
+        id: "rim",
+        parts: [
+          { rect: [0, 0, 100, 100] },
+          { path: [["M", 10, 10], ["C", 50, 50, 80, 20, 90, 90]], role: "body" },
+        ],
+      },
+    });
+    const markup = flattenMarkup(
+      renderGlowMask([{ id: "r", type: "rim", x: 0, y: 0, w: 100, h: 100 }] as never,
+        100, 100, "gm", catalog)
+    );
+    const path = /<path[\s\S]*?\/>/.exec(markup)?.[0] ?? "";
+    expect(path).toContain("fill=none");
+    expect(path).not.toContain("fill=#000");
+    // The closed sibling still dims, so this is not a mask that went missing.
+    expect(markup).toContain(`fill-opacity=${1 - FURNITURE_GLOW_TRANSMISSION}`);
+  });
+
+  // `Z` at the end of the command list is not proof the whole path is sealed:
+  // a subpath left open before a fresh `M` gets the same implicit closing.
+  it("treats a path with any open subpath as open", () => {
+    const catalog = symbolCatalog({
+      mixed: {
+        id: "mixed",
+        parts: [
+          {
+            path: [["M", 0, 0], ["L", 100, 0], ["M", 0, 50], ["L", 100, 50], ["Z"]],
+            role: "body",
+          },
+        ],
+      },
+      sealed: {
+        id: "sealed",
+        parts: [
+          {
+            path: [["M", 0, 0], ["L", 100, 0], ["L", 100, 40], ["Z"],
+                   ["M", 0, 50], ["L", 100, 50], ["L", 100, 90], ["Z"]],
+            role: "body",
+          },
+        ],
+      },
+    });
+    const mask = (type: string) =>
+      flattenMarkup(
+        renderGlowMask([{ id: "m", type, x: 0, y: 0, w: 100, h: 100 }] as never,
+          100, 100, "gm", catalog)
+      );
+    const blocked = `fill-opacity=${1 - FURNITURE_GLOW_TRANSMISSION}`;
+    expect(mask("mixed")).toContain("fill=none");
+    expect(mask("mixed")).not.toContain(blocked);
+    // Every subpath sealed is the case this guard must still let through.
+    expect(mask("sealed")).toContain(blocked);
+  });
+
+  // The mask group is geometry a filter reads, not the furniture the user
+  // sees. Carrying `data-entity` would let an unscoped card-mod rule aimed at
+  // a light repaint the mask source and bend the pool it cuts.
+  it("keeps card-mod's styling hooks off the mask source", () => {
+    const markup = flattenMarkup(
+      renderGlowMask(
+        [{ id: "s", type: "sofa", entity: "light.kitchen", x: 0, y: 0, w: 100, h: 50 }] as never,
+        100, 100, "gm"
+      )
+    );
+    expect(markup).toContain("fp-furniture-mask");
+    expect(markup).not.toContain("data-entity");
+    expect(markup).not.toContain("data-id");
   });
 
   // This is the guard in *both* directions, and the reason the level is a

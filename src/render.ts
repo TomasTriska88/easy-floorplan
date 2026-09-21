@@ -1233,15 +1233,17 @@ export function renderGlowMask(
  *
  * A mask's luminance is its transmission, so the piece paints **black** at the
  * share `overrideOp` it blocks. Only closed geometry (rect, circle, ellipse, a
- * filled polygon, a path sealed with `Z`) casts a shadow across its interior;
- * open line work — a sofa's seat separators, a tub's rim — blocks just the
- * light its strokes cover. So a piece drawn purely as open strokes must have a
- * closed shape outermost for the mask to read; the `furniture/` authors' note
- * in the README warns about exactly that.
+ * filled polygon, a path whose every subpath is sealed with `Z`) casts a
+ * shadow across its interior; open line work — a sofa's seat separators, a
+ * tub's rim — blocks just the light its strokes cover, fill or no fill. So a
+ * piece drawn purely as open strokes must have a closed shape outermost for
+ * the mask to read; the `furniture/` authors' note in the README warns about
+ * exactly that.
  *
  * The overrides are optional because the same helper can drive a plain
  * rendering; `color` doubles as the stroke color, `overrideFill` as the fill,
- * and `overrideOp` as the fill's opacity.
+ * and `overrideOp` as the fill's opacity — passing it is what marks the call
+ * as a mask, which is when open parts lose their fill.
  */
 export function renderFurnitureMask(
   f: Furniture,
@@ -1261,10 +1263,12 @@ export function renderFurnitureMask(
 
     symbol.parts = symbol.parts.map((p) => {
       // Only sealed, closed shapes have an interior for the mask to dim. An
-      // open stroke keeps its `fill="none"`; SVG fills an open path by
-      // implicitly closing it, which would smear a wedge the glyph never
-      // draws (the tub's rim in #248's cover image).
-      if (closedGeometry(p)) p.style.fillOpacity = overrideOp;
+      // open stroke is forced back to no fill at all — SVG fills an open path
+      // by implicitly closing it, so a `role: "body"` path left with its own
+      // fill opacity would smear a wedge the glyph never draws (the tub's rim
+      // in #248's cover image). Zeroing it here, rather than in
+      // `partTemplate`, keeps ordinary furniture rendering untouched.
+      p.style.fillOpacity = closedGeometry(p) ? overrideOp : 0;
       return p;
     });
   }
@@ -1276,9 +1280,11 @@ export function renderFurnitureMask(
   // symbol. A mirror is uniform in |scale|, so strokes keep their width.
   const mirror = f.hand === "left" ? " scale(-1 1)" : "";
 
+  // No `data-id`/`data-entity` here, unlike `renderFurniture`: this group is
+  // mask *source* geometry, and an unscoped card-mod rule like
+  // `[data-entity="light.kitchen"] { filter: … }` would then repaint the mask
+  // itself, bending the light pool it cuts.
   return svg`<g class=${`fp-furniture-mask fp-furniture-mask-${cssIdent(f.type) ?? "unknown"}`}
-                data-id=${cssIdent(f.id) ?? nothing}
-                data-entity=${cssEntityId(f.entity) ?? nothing}
                 transform="translate(${f.x} ${f.y}) rotate(${f.angle ?? 0})${mirror}">${parts}</g>`;
 }
 
@@ -1294,11 +1300,23 @@ function closedGeometry(p: SymbolPart): boolean {
       return true;
     case "poly":
       return p.closed;
-    case "path":
-      // Every subpath must be sealed, not just one of them: SVG fills an open
-      // subpath by closing it implicitly, so a path like `M … Z M …` would
-      // still smear a wedge its trailing open stroke never draws.
-      return p.cmds[p.cmds.length - 1][0] === "Z";
+    case "path": {
+      // Every subpath must be sealed, not just the last one: SVG fills an open
+      // subpath by closing it implicitly, so `M … Z M …` (a trailing open
+      // stroke) and `M … M … Z` (a leading one) both smear a wedge the glyph
+      // never draws. A fresh `M` while the previous subpath is still open is
+      // that second case, so walk the commands rather than reading the last.
+      let open = false;
+      for (const c of p.cmds) {
+        if (c[0] === "M") {
+          if (open) return false;
+          open = true;
+        } else if (c[0] === "Z") {
+          open = false;
+        }
+      }
+      return !open;
+    }
     case "line":
       return false;
   }
