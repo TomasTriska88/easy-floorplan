@@ -5,6 +5,7 @@ import {
   findSymbol,
   renderSymbolParts,
   type SymbolCatalog,
+  type SymbolPart,
 } from "./symbols";
 import type {
   FloorplanCardConfig,
@@ -1174,9 +1175,12 @@ export function renderSunDimMask(
 }
 
 /**
- * A `<mask>` for the whole glow layer that **dims** the light over every
- * furniture footprint. Round-based types cut an ellipse, everything else its
- * rotated rect.
+ * A `<mask>` for the whole glow layer that **dims** the light where furniture
+ * stands, by painting each piece's own symbol geometry into the mask (see
+ * {@link renderFurnitureMask}). The dimmed area follows the piece's outline —
+ * the notch of an L-shaped sectional dims as floor, not the rectangle around
+ * it (issue #248) — and a config's own symbols get the same treatment as the
+ * built-ins.
  *
  * This is a dial with a reported bug at each end, which is why it is a grey
  * and not `black` ({@link FURNITURE_GLOW_TRANSMISSION}):
@@ -1220,6 +1224,25 @@ export function renderGlowMask(
     </defs>`;
 }
 
+/**
+ * A furniture piece drawn as mask geometry: the same parts the glyph shows,
+ * painted at the share it blocks. {@link renderGlowMask} uses this so the
+ * dimmed footprint matches the piece's real outline — a rectangular crate, a
+ * round table, an L-shaped sectional — rather than the bounding box the mask
+ * used to cut (issue #248).
+ *
+ * A mask's luminance is its transmission, so the piece paints **black** at the
+ * share `overrideOp` it blocks. Only closed geometry (rect, circle, ellipse, a
+ * filled polygon, a path sealed with `Z`) casts a shadow across its interior;
+ * open line work — a sofa's seat separators, a tub's rim — blocks just the
+ * light its strokes cover. So a piece drawn purely as open strokes must have a
+ * closed shape outermost for the mask to read; the `furniture/` authors' note
+ * in the README warns about exactly that.
+ *
+ * The overrides are optional because the same helper can drive a plain
+ * rendering; `color` doubles as the stroke color, `overrideFill` as the fill,
+ * and `overrideOp` as the fill's opacity.
+ */
 export function renderFurnitureMask(
   f: Furniture,
   overrideColor?: string,
@@ -1228,20 +1251,23 @@ export function renderFurnitureMask(
   catalog: SymbolCatalog = BUILTIN_SYMBOLS,
 ): SVGTemplateResult {
   const color = overrideColor ?? f.color ?? FURNITURE_COLOR;
-  var symbol = findSymbol(catalog, f.type) ?? FALLBACK_SYMBOL;
+  let symbol = findSymbol(catalog, f.type) ?? FALLBACK_SYMBOL;
 
-  if (overrideOp) {
-    // copy symbol description to non-destructively change the style (if override is defined)
-    // the return value fo findSymbol is a reference to a global value,
-    // so it has to be copied before modification
+  if (overrideOp !== undefined) {
+    // `findSymbol` hands back a reference into the (possibly global) catalog,
+    // so copy the symbol before writing to it — otherwise the mask's opacity
+    // leaks into the furniture the card draws on top.
     symbol = structuredClone(symbol);
 
     symbol.parts = symbol.parts.map((p) => {
-        p.style.fillOpacity = overrideOp;
-        return p
-    })
+      // Only sealed, closed shapes have an interior for the mask to dim. An
+      // open stroke keeps its `fill="none"`; SVG fills an open path by
+      // implicitly closing it, which would smear a wedge the glyph never
+      // draws (the tub's rim in #248's cover image).
+      if (closedGeometry(p)) p.style.fillOpacity = overrideOp;
+      return p;
+    });
   }
-
 
   const parts = renderSymbolParts(symbol, f.w, f.h, color, overrideFill);
 
@@ -1254,6 +1280,25 @@ export function renderFurnitureMask(
                 data-id=${cssIdent(f.id) ?? nothing}
                 data-entity=${cssEntityId(f.entity) ?? nothing}
                 transform="translate(${f.x} ${f.y}) rotate(${f.angle ?? 0})${mirror}">${parts}</g>`;
+}
+
+/**
+ * Whether a part is closed geometry a mask can dim across its interior. Open
+ * line work (and an unsealed path) only blocks the light its stroke covers.
+ */
+function closedGeometry(p: SymbolPart): boolean {
+  switch (p.kind) {
+    case "rect":
+    case "circle":
+    case "ellipse":
+      return true;
+    case "poly":
+      return p.closed;
+    case "path":
+      return p.cmds.some((c) => c[0] === "Z");
+    case "line":
+      return false;
+  }
 }
 
 /**

@@ -5656,7 +5656,7 @@ describe("renderGlowMask — furniture is dimmed, not blacked out (#108, #106)",
       )
     );
 
-  it("shades a rotated rect per furniture piece, ellipse for round types", () => {
+  it("shades each piece's own symbol geometry, rotated into place", () => {
     const markup = twoPieces();
     expect(markup).toContain("id=gm");
     expect(markup).toContain("rotate(90)");
@@ -5665,12 +5665,12 @@ describe("renderGlowMask — furniture is dimmed, not blacked out (#108, #106)",
     expect(markup).toContain("width=1016");
   });
 
-  // The footprint comes off the symbol now (issue #90), not off a hard-coded
-  // list of the three round built-ins — so a contributed round piece casts a
-  // round shadow without anyone editing this file.
-  it("takes a config symbol's own footprint, not just the built-in round ones", () => {
+  // The mask is the symbol's own geometry now (#248), so a contributed round
+  // piece dims its ellipse and a crate dims its rect, with no hard-coded list
+  // of round built-ins for anyone to keep in sync.
+  it("uses a config symbol's own geometry, not a list of round built-ins", () => {
     const catalog = symbolCatalog({
-      pouffe: { id: "pouffe", footprint: "ellipse", parts: [{ ellipse: [50, 50, 50, 50] }] },
+      pouffe: { id: "pouffe", parts: [{ ellipse: [50, 50, 50, 50], role: "body" }] },
       crate: { id: "crate", parts: [{ rect: [0, 0, 100, 100] }] },
     });
     const round = flattenMarkup(
@@ -5683,6 +5683,21 @@ describe("renderGlowMask — furniture is dimmed, not blacked out (#108, #106)",
     );
     expect(round).toContain("<ellipse");
     expect(square).not.toContain("<ellipse");
+  });
+
+  // This is the whole point of #248: a mask cut from the sectional's own
+  // polygon dims the L's notch as floor, while the axis-aligned bounding box
+  // the mask used to cut would have dimmed that empty arm of the L too.
+  it("cuts the sectional's L silhouette, notch and all", () => {
+    const markup = flattenMarkup(
+      renderGlowMask([{ id: "l", type: "sectional", x: 0, y: 0, w: 230, h: 180 }] as never,
+        1000, 600, "gm")
+    );
+    // The L's inner corner sits at x = 58/100 of the authoring box's width
+    // (58 × 2.3 − 115 = 18.4). Only the symbol's own polygon produces that
+    // vertex; a bounding-box rect never would.
+    expect(markup).toContain("<polygon");
+    expect(markup).toMatch(/18\.3\d+,9/);
   });
 
   // This is the guard in *both* directions, and the reason the level is a

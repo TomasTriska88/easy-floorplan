@@ -522,7 +522,7 @@ function paint(style: PartStyle, color: string) {
 
 function partTemplate(p: SymbolPart, m: Mapper, color: string, fillColor?: string): SVGTemplateResult {
   const { fill, stroke, style } = paint(p.style, color);
-  const fillC = fillColor ? fillColor : fill;
+  const fillC = fillColor ?? fill;
 
   // Omitted rather than defaulted: `opacity="1"` and `stroke-dasharray="none"`
   // on every part would triple the markup a large plan carries for no effect.
@@ -575,8 +575,14 @@ function partTemplate(p: SymbolPart, m: Mapper, color: string, fillColor?: strin
                 .join(" ")}`
         )
         .join(" ");
+      // Only a path sealed with `Z` carries a fill. Filling an open path would
+      // make SVG close it implicitly — a wedge the glyph never draws. This
+      // matters now that {@link renderFurnitureMask} paints the symbol into
+      // the light mask: a `detail` curve (a tub's rim, a stair's rail) must
+      // block only the light under its stroke.
+      const closed = p.cmds.some((c) => c[0] === "Z");
       return svg`<path d=${d}
-                       fill=${fill} fill-opacity=${fillOp}
+                       fill=${closed ? fillC : "none"} fill-opacity=${fillOp}
                        stroke=${stroke} stroke-width=${sw}
                        stroke-linejoin="round" opacity=${op} />`;
     }
@@ -586,6 +592,10 @@ function partTemplate(p: SymbolPart, m: Mapper, color: string, fillColor?: strin
 /**
  * A symbol's parts, drawn into a `w × h` box centered on the origin, in
  * `color`. The caller wraps them in the positioned group.
+ *
+ * `fillColor`, when given, overrides the fill — the light mask paints each
+ * piece black. A part that is not meant to fill (a `line`, an open
+ * `polyline`, an unsealed `path`) keeps `fill="none"` regardless.
  */
 export function renderSymbolParts(
   def: SymbolDef,

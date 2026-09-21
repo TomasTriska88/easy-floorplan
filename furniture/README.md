@@ -106,7 +106,7 @@ an editor to drop it into and resize.
 
 ### Lighting
 
-If you create your own furniture, be careful which primitives you use for what. For correct displaying of the lighting mask, always use at least a closed shape as the outermost line. For example, if you draw a hexagonal table, do not draw the outer lines as separate `line` objects, use a `polygon` instead.
+If you create your own furniture, be careful which primitives you use for what. For the lighting mask to display correctly, always use at least a closed shape as the outermost line. For example, if you draw a hexagonal table, do not draw the outer lines as separate `line` objects, use a `polygon` instead.
 
 ## What gets merged
 
