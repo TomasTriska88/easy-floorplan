@@ -1295,7 +1295,10 @@ function closedGeometry(p: SymbolPart): boolean {
     case "poly":
       return p.closed;
     case "path":
-      return p.cmds.some((c) => c[0] === "Z");
+      // Every subpath must be sealed, not just one of them: SVG fills an open
+      // subpath by closing it implicitly, so a path like `M … Z M …` would
+      // still smear a wedge its trailing open stroke never draws.
+      return p.cmds[p.cmds.length - 1][0] === "Z";
     case "line":
       return false;
   }

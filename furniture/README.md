@@ -21,7 +21,8 @@ there is no `<script>`, no `on*` handler, no `javascript:` href, and no colour t
   "keywords": ["couch", "settee"],   // search only — "couch" should find this
   "size": { "w": 170, "h": 72 },     // default size when someone places it
   "viewBox": [0, 0, 100, 100],       // optional; this is the default
-  "footprint": "rect",               // optional; "ellipse" for a round-bodied piece
+  // "footprint" is accepted for compatibility but unused: the light mask
+  // follows the symbol's own geometry now.
   "parts": [
     { "rect": [0, 0, 100, 100], "rx": 5.555556, "role": "body" },
     { "line": [0, 30, 100, 30] },

@@ -66,7 +66,10 @@ export interface SymbolDef {
   size: { w: number; h: number };
   /** Authoring box: `[x, y, w, h]`, origin top-left. */
   viewBox: [number, number, number, number];
-  /** Shape the glow mask cuts for this piece (#106). */
+  /**
+   * Parsed for compatibility; the glow mask dims the symbol's own geometry
+   * now (#248), so this no longer shapes the mask (#106) and nothing reads it.
+   */
   footprint: "rect" | "ellipse";
   parts: SymbolPart[];
 }
@@ -575,14 +578,8 @@ function partTemplate(p: SymbolPart, m: Mapper, color: string, fillColor?: strin
                 .join(" ")}`
         )
         .join(" ");
-      // Only a path sealed with `Z` carries a fill. Filling an open path would
-      // make SVG close it implicitly — a wedge the glyph never draws. This
-      // matters now that {@link renderFurnitureMask} paints the symbol into
-      // the light mask: a `detail` curve (a tub's rim, a stair's rail) must
-      // block only the light under its stroke.
-      const closed = p.cmds.some((c) => c[0] === "Z");
       return svg`<path d=${d}
-                       fill=${closed ? fillC : "none"} fill-opacity=${fillOp}
+                       fill=${fill} fill-opacity=${fillOp}
                        stroke=${stroke} stroke-width=${sw}
                        stroke-linejoin="round" opacity=${op} />`;
     }
@@ -594,8 +591,9 @@ function partTemplate(p: SymbolPart, m: Mapper, color: string, fillColor?: strin
  * `color`. The caller wraps them in the positioned group.
  *
  * `fillColor`, when given, overrides the fill — the light mask paints each
- * piece black. A part that is not meant to fill (a `line`, an open
- * `polyline`, an unsealed `path`) keeps `fill="none"` regardless.
+ * piece black. Which parts fill at all is the caller's call: the mask dims
+ * only closed geometry (see {@link renderFurnitureMask}), and a stroke keeps
+ * `fill="none"` for itself because its role's fill opacity is 0.
  */
 export function renderSymbolParts(
   def: SymbolDef,
