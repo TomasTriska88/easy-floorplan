@@ -1930,10 +1930,12 @@ export class FloorplanCardEditor extends LitElement {
           coupledIds: new Set([...coupled.coupledIds, ...next.coupledIds]),
         };
       }
+      // Below minimum size the resize is rejected: emit the floor as it was
+      // before this frame, so the neighbours the coupling loop moved are not
+      // left displaced against a primary that snapped back — shared edges stay
+      // coincident on the frame that refuses the move.
       if (isRectArea(moving.points) && !rectAreaHasMinimumSize(points)) {
-        this._emitFloor({
-          areas: (f.areas ?? []).map((a) => (a.id === drag.primary.id ? { ...a, points: moving.points } : a)),
-        });
+        this._emitFloor({ areas: f.areas ?? [] });
         return;
       }
       this._emitFloor({
@@ -1980,10 +1982,12 @@ export class FloorplanCardEditor extends LitElement {
         uncoupled,
         coupled.delta
       );
+      // Rejected: roll the whole resize back, not just the primary.
+      // `coupled.areas` carries the neighbours this frame moved to follow the
+      // shared edge; emitting it with only the primary restored tears that
+      // boundary, which the previous frame had kept coincident.
       if (!rectAreaHasMinimumSize(points)) {
-        this._emitFloor({
-          areas: coupled.areas.map((a) => (a.id === drag.primary.id ? { ...a, points: moving.points } : a)),
-        });
+        this._emitFloor({ areas: f.areas ?? [] });
         return;
       }
       this._emitFloor({

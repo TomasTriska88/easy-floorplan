@@ -429,6 +429,77 @@ describe("editor drag", () => {
     document.body.innerHTML = "";
   });
 
+  it("rejects a corner resize that collapses a rectangle without moving the coupled neighbour", async () => {
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.appendChild(host);
+
+    const ed = document.createElement("easy-floorplan-card-editor") as FloorplanCardEditor;
+    ed.hass = { states: {}, entities: {} } as unknown as FloorplanCardEditor["hass"];
+    ed.setConfig({
+      ...config(),
+      floors: [
+        {
+          ...config().floors![0],
+          areas: [
+            {
+              id: "room1",
+              points: [
+                { x: 100, y: 100 },
+                { x: 200, y: 100 },
+                { x: 200, y: 200 },
+                { x: 100, y: 200 },
+              ],
+            },
+            {
+              id: "room2",
+              points: [
+                { x: 200, y: 100 },
+                { x: 300, y: 100 },
+                { x: 300, y: 200 },
+                { x: 200, y: 200 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    host.appendChild(ed);
+    await ed.updateComplete;
+
+    (ed as any)._selection = [{ kind: "area", id: "room1" }];
+    await ed.updateComplete;
+
+    // Corner 1 (top-right, 200,100) shares side "right" with room2. Drag it
+    // onto the opposite corner (100,200) — the resize collapses, so the whole
+    // move is rejected: room2 must not be left displaced against a primary
+    // that snapped back to its old edge.
+    const corner = ed.shadowRoot!.querySelectorAll<SVGCircleElement>("circle.handle")[1];
+    expect(corner).toBeTruthy();
+    const from = center(corner!);
+    const to = screenPoint(ed.shadowRoot!.querySelector("svg")!, 100, 200);
+    pointer(corner!, "pointerdown", from.x, from.y);
+    pointer(corner!, "pointermove", to.x, to.y);
+    await frame();
+    await ed.updateComplete;
+    pointer(corner!, "pointerup", to.x, to.y);
+    await ed.updateComplete;
+
+    expect((ed as any)._floor().areas[0].points).toEqual([
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+      { x: 200, y: 200 },
+      { x: 100, y: 200 },
+    ]);
+    expect((ed as any)._floor().areas[1].points).toEqual([
+      { x: 200, y: 100 },
+      { x: 300, y: 100 },
+      { x: 300, y: 200 },
+      { x: 200, y: 200 },
+    ]);
+    document.body.innerHTML = "";
+  });
+
   it("drags and toggles a selected area's edge segment away from the endpoints", async () => {
     const host = document.createElement("div");
     host.style.width = "900px";

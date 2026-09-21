@@ -1000,11 +1000,17 @@ export class FloorplanCard extends LitElement {
     // Dead spaces (issue #88). Derived from the walls and openings, never
     // stored — and memoized on those two arrays, because this runs on every
     // hass update the card takes and the walls have moved on none of them.
-    const roomWallSegments = [
-      ...active.walls,
-      ...active.areas.flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {}).filter((w) => !w.divider)),
-    ];
-    const blockingWallSegments = wallsThatBlock(roomWallSegments);
+    // Generated room walls (the sideWalls of every rectangle area): each drawn
+    // side adds a wall — or a divider, which blocks nothing and draws as its
+    // dashed self. They join the drawn walls for rendering, but only the
+    // non-divider ones stand in the way of light and seal off space.
+    const generatedRoomWalls = active.areas.flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {}));
+    const roomWallSegments = [...active.walls, ...generatedRoomWalls];
+    const blockingWallSegments = wallsThatBlock(
+      generatedRoomWalls.some((w) => w.divider)
+        ? roomWallSegments.filter((w) => !w.divider)
+        : roomWallSegments
+    );
     const deadSpaceRings = c.showDeadSpaces
       ? deadSpacesCached(blockingWallSegments, active.openings)
       : [];
@@ -1329,8 +1335,11 @@ export class FloorplanCard extends LitElement {
             ${
               c.sunlight
                 ? renderSunlight(
-                    // Railings let the sun over them (issue #182).
-                    wallsThatBlock(active.walls),
+                    // The same blocking set the lamps and dead space get
+                    // (issue #290): generated room walls stop the sun too, and
+                    // a divider never does. Railings are already out, so the
+                    // sun passes over them (issue #182).
+                    blockingWallSegments,
                     active.openings,
                     c.width,
                     c.height,
