@@ -110,6 +110,7 @@ import {
   itemLabelColor,
   areaLabelFontSize,
   wallStrokeStyle,
+  dividerStrokeStyle,
   normalizeOverlayScale,
   normalizeOverlayMinWidth,
   overlayLength,
@@ -161,6 +162,7 @@ import {
 } from "./actions";
 import { actionHandler } from "./action-handler";
 import { renderAmbientDaylightLayer } from "./ambient-daylight-integration";
+import { rectAreaSideWalls } from "./editor-geometry";
 import { ReplayControllerImpl } from "./replay-history/replay-controller";
 import { createReplayPanelProps, renderReplayPanel } from "./replay-history/replay-panel";
 
@@ -998,8 +1000,19 @@ export class FloorplanCard extends LitElement {
     // Dead spaces (issue #88). Derived from the walls and openings, never
     // stored — and memoized on those two arrays, because this runs on every
     // hass update the card takes and the walls have moved on none of them.
+    // Generated room walls (the sideWalls of every rectangle area): each drawn
+    // side adds a wall — or a divider, which blocks nothing and draws as its
+    // dashed self. They join the drawn walls for rendering, but only the
+    // non-divider ones stand in the way of light and seal off space.
+    const generatedRoomWalls = active.areas.flatMap((a) => rectAreaSideWalls(a.id, a.points, a.sideWalls ?? {}));
+    const roomWallSegments = [...active.walls, ...generatedRoomWalls];
+    const blockingWallSegments = wallsThatBlock(
+      generatedRoomWalls.some((w) => w.divider)
+        ? roomWallSegments.filter((w) => !w.divider)
+        : roomWallSegments
+    );
     const deadSpaceRings = c.showDeadSpaces
-      ? deadSpacesCached(wallsThatBlock(active.walls), active.openings)
+      ? deadSpacesCached(blockingWallSegments, active.openings)
       : [];
     // Walls as light meets them (issue #143): open doors and windows are holes,
     // exactly as the plan draws them. Computed once here rather than inside
@@ -1011,7 +1024,7 @@ export class FloorplanCard extends LitElement {
     // state change the card takes.
     const castsLight = c.sunDimming || active.items.some((it) => it.glow);
     const lightWalls = castsLight
-      ? wallsLightPassesThrough(wallsThatBlock(active.walls), active.openings, (o) =>
+      ? wallsLightPassesThrough(blockingWallSegments, active.openings, (o) =>
           // Both leaves, and the travel each style actually has (issue #145):
           // asking `entity` alone left a door whose *second* panel was open
           // still blocking light outright. Glass admits it whole regardless
@@ -1025,7 +1038,7 @@ export class FloorplanCard extends LitElement {
             o.shutterEntity ? shutterAmount(renderHass?.states[o.shutterEntity], o.shutterInvert) : undefined
           )
         )
-      : wallsThatBlock(active.walls);
+      : blockingWallSegments;
     // Lit rooms hold back the night (issue #113): without this the flat dim
     // multiplies the lit-vs-unlit contrast too, and a lamp ends up *less*
     // visible after dark than at noon.
@@ -1322,8 +1335,11 @@ export class FloorplanCard extends LitElement {
             ${
               c.sunlight
                 ? renderSunlight(
-                    // Railings let the sun over them (issue #182).
-                    wallsThatBlock(active.walls),
+                    // The same blocking set the lamps and dead space get
+                    // (issue #290): generated room walls stop the sun too, and
+                    // a divider never does. Railings are already out, so the
+                    // sun passes over them (issue #182).
+                    blockingWallSegments,
                     active.openings,
                     c.width,
                     c.height,
@@ -1391,13 +1407,14 @@ export class FloorplanCard extends LitElement {
                 : nothing
             }
             ${renderWallMask(active.openings, c.width, c.height, this._wallMaskId)}
-            ${active.walls.map(
+            ${roomWallSegments.map(
                 (w) => svg`
                 <g class="fp-wall-neon"><line x1=${w.x1} y1=${w.y1} x2=${w.x2} y2=${w.y2}
                       class="wall fp-wall ${isRailing(w) ? "railing" : ""}"
                       data-id=${cssIdent(w.id) ?? nothing}
                       mask=${`url(#${this._wallMaskId})`}
-                      style=${wallStrokeStyle(w.thickness, w.kind)} stroke-linecap="round" /></g>`
+                      style=${w.divider ? dividerStrokeStyle() : wallStrokeStyle(w.thickness, w.kind)}
+                      stroke-linecap="round" /></g>`
               )}
             <!-- Room outlines, above the walls they trace. An area polygon runs
                  down the centerline of the room's walls, so an outline drawn
