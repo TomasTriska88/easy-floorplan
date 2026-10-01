@@ -1,0 +1,46 @@
+views:
+  - title: Ambient daylight review
+    path: plan
+    type: panel
+    cards:
+      - type: custom:easy-floorplan-card
+        width: 900
+        height: 540
+        grid: 20
+        snap: 0
+        background: "#e5e7eb"
+        showDeadSpaces: false
+        sunDimming: false
+        sunlight: false
+        ambientDaylight: false
+        walls:
+          - { id: north, x1: 80, y1: 70, x2: 820, y2: 70 }
+          - { id: east, x1: 820, y1: 70, x2: 820, y2: 470 }
+          - { id: south, x1: 820, y1: 470, x2: 80, y2: 470 }
+          - { id: west, x1: 80, y1: 470, x2: 80, y2: 70 }
+          - { id: divider, x1: 560, y1: 70, x2: 560, y2: 470 }
+        openings:
+          - { id: north-window, type: window, x: 270, y: 70, length: 260, angle: 0 }
+          - { id: west-window, type: window, x: 80, y: 285, length: 220, angle: 90 }
+          - { id: interior-door, type: door, x: 560, y: 300, length: 100, angle: 90 }
+        items: []
+        texts: []
+        furniture: []
+        trackers: []
+        areas:
+          - id: daylit-room
+            color: "#475569"
+            opacity: 1
+            points:
+              - { x: 80, y: 70 }
+              - { x: 560, y: 70 }
+              - { x: 560, y: 470 }
+              - { x: 80, y: 470 }
+          - id: adjacent-room
+            color: "#475569"
+            opacity: 1
+            points:
+              - { x: 560, y: 70 }
+              - { x: 820, y: 70 }
+              - { x: 820, y: 470 }
+              - { x: 560, y: 470 }
