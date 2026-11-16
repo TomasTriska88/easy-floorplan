@@ -1,10 +1,10 @@
 name: Validate
 
+# Retained as a source backup fork: run tests on code changes only.
+# No scheduled HACS validation without a release artifact.
 on:
   push:
   pull_request:
-  schedule:
-    - cron: "0 0 * * *"
   workflow_dispatch:
 
 # Least privilege: read-only is all the validation/build jobs need (checkout
@@ -18,19 +18,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  validate-hacs:
-    # Validates the head repo, not the diff — and a fork has no release asset
-    # for it to find, so it can only ever fail there. `build` still runs.
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: HACS validation
-        uses: hacs/action@main
-        with:
-          category: plugin
-
   build:
     runs-on: ubuntu-latest
     steps:
